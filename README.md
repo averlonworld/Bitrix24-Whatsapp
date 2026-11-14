@@ -71,6 +71,14 @@ partner account if you want to distribute it).
 Save, then copy the **client_id** and **client_secret** Bitrix shows.
 
 ### 2. Start the server
+**Quickest:** on a fresh Ubuntu/Debian VPS run the installer. It installs Docker, asks for the
+client_id/secret, generates all secrets and starts everything with HTTPS. No domain needed: it
+offers a free `<your-ip>.sslip.io` address.
+```bash
+curl -fsSL https://raw.githubusercontent.com/averlonworld/bitrix24-whatsapp/feature/whatsapp-qr-connector/scripts/install.sh | sudo bash
+```
+
+**Manual:**
 ```bash
 git clone https://github.com/averlonworld/bitrix24-whatsapp.git
 cd bitrix24-whatsapp
