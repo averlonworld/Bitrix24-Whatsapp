@@ -1,0 +1,53 @@
+# Run on your own computer for testing:  bash scripts/local.sh
+# A free Cloudflare quick tunnel gives the app a public https://*.trycloudflare.com address so
+# Bitrix24 cloud can reach it. No domain, no router setup, no open ports.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://wa:${POSTGRES_PASSWORD:-wa}@postgres:5432/wa
+      REDIS_URL: redis://redis:6379
+      MEDIA_DIR: /app/media
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wa}
+      POSTGRES_DB: wa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wa"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://app:3000"]
+
+volumes:
+  media:
+  pgdata:
+  redisdata:

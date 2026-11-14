@@ -92,6 +92,18 @@ docker compose up -d --build
 ```
 Check `https://YOUR_DOMAIN/health` returns `{"ok":true}`.
 
+### Or: run it on your own computer (testing)
+Needs [Docker Desktop](https://www.docker.com/products/docker-desktop/) (on Windows, run the script
+in WSL or Git Bash). A free Cloudflare quick tunnel gives your computer a public HTTPS address.
+```bash
+git clone -b feature/whatsapp-qr-connector https://github.com/averlonworld/Bitrix24-Whatsapp.git
+cd Bitrix24-Whatsapp
+bash scripts/local.sh
+```
+The script prints the two paths to enter in the Bitrix24 Local application. Limits: it only works
+while the computer is on and awake, and the tunnel address changes whenever it restarts (the script
+detects that and tells you to update the two paths). For real use, deploy to a server.
+
 ### 3. Install and link a number
 1. In Bitrix24, open the app (it installs on first open) - **WhatsApp** appears in the left menu.
 2. Create an Open Line in **Contact Center** if you do not have one.

@@ -147,20 +147,47 @@ async function registerOrUpdate(portal: Portal, family: 'bizproc.robot' | 'bizpr
 }
 
 export async function registerSmsProvider(portal: Portal): Promise<void> {
+  const fields = {
+    CODE: SMS_PROVIDER_CODE,
+    TYPE: 'SMS',
+    HANDLER: `${config().publicUrl}/bitrix/sms`,
+    NAME: 'WhatsApp',
+    DESCRIPTION: 'Send "SMS" from CRM as WhatsApp messages through your QR-linked number',
+  };
   await soft(portal, 'messageservice.sender.add', async () => {
     try {
-      await call(portal, 'messageservice.sender.add', {
-        CODE: SMS_PROVIDER_CODE,
-        TYPE: 'SMS',
-        HANDLER: `${config().publicUrl}/bitrix/sms`,
-        NAME: 'WhatsApp',
-        DESCRIPTION: 'Send "SMS" from CRM as WhatsApp messages through your QR-linked number',
-      });
+      await call(portal, 'messageservice.sender.add', fields);
     } catch (err) {
-      if (err instanceof BitrixError && /exist|duplicate|already/i.test(`${err.code} ${err.description}`)) return;
-      throw err;
+      if (!(err instanceof BitrixError && /exist|duplicate|already/i.test(`${err.code} ${err.description}`))) throw err;
+      // Already registered - possibly with an old address: replace it so the handler is current.
+      await call(portal, 'messageservice.sender.delete', { CODE: SMS_PROVIDER_CODE });
+      await call(portal, 'messageservice.sender.add', fields);
     }
   });
+}
+
+/**
+ * Remove event handlers and placements that point at an address this server no longer has
+ * (changed domain, or a local test tunnel that got a new URL). Without this, Bitrix keeps
+ * delivering to the dead address and CRM cards show a second, broken WhatsApp tab.
+ */
+export async function removeStaleHandlers(portal: Portal): Promise<void> {
+  const base = config().publicUrl;
+  const ours = (handler: string) => handler.startsWith(`${base}/`);
+  const events = await call<Array<{ event: string; handler: string }>>(portal, 'event.get', {}).catch(() => []);
+  for (const e of events ?? []) {
+    if (e.handler && !ours(e.handler)) {
+      await soft(portal, `event.unbind ${e.event}`, () => call(portal, 'event.unbind', { event: e.event, handler: e.handler }));
+    }
+  }
+  const placements = await call<Array<{ placement: string; handler: string }>>(portal, 'placement.get', {}).catch(() => []);
+  for (const p of placements ?? []) {
+    if (p.handler && !ours(p.handler)) {
+      await soft(portal, `placement.unbind ${p.placement}`, () =>
+        call(portal, 'placement.unbind', { PLACEMENT: p.placement, HANDLER: p.handler }),
+      );
+    }
+  }
 }
 
 /** imconnector.activate: route an Open Line through this connector. */
@@ -186,6 +213,7 @@ export async function ensureRegistered(portal: Portal, { force = false } = {}): 
   const target = config().connectorVersion;
   if (!force && portal.connector_version === target) return false;
 
+  await soft(portal, 'remove stale handlers', () => removeStaleHandlers(portal));
   await registerConnector(portal);
   await bindEvents(portal);
   await bindCrmPlacements(portal);
