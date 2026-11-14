@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # One-command installer for a fresh Ubuntu / Debian VPS.
-#   curl -fsSL https://raw.githubusercontent.com/averlonworld/bitrix24-whatsapp/feature/whatsapp-qr-connector/scripts/install.sh | sudo bash
+#   Private repo:  git clone https://github.com/averlonworld/Bitrix24-Whatsapp.git /opt/bitrix24-whatsapp
+#                  sudo bash /opt/bitrix24-whatsapp/scripts/install.sh
+#   Public repo:   curl -fsSL https://raw.githubusercontent.com/averlonworld/Bitrix24-Whatsapp/feature/whatsapp-qr-connector/scripts/install.sh | sudo bash
 # Re-running it updates the app and keeps your existing settings and secrets.
 set -euo pipefail
 
-REPO="https://github.com/averlonworld/bitrix24-whatsapp.git"
+REPO="https://github.com/averlonworld/Bitrix24-Whatsapp.git"
 BRANCH="${BRANCH:-feature/whatsapp-qr-connector}"
-DIR="${DIR:-/opt/bitrix24-whatsapp}"
+# Run from inside a clone (private repo): use that clone. Otherwise clone into /opt.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd || true)"
+if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/docker-compose.yml" ] && [ -d "$SELF_DIR/.git" ]; then
+  DIR="${DIR:-$SELF_DIR}"
+else
+  DIR="${DIR:-/opt/bitrix24-whatsapp}"
+fi
 
 say() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -30,7 +38,8 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose plugin missing - i
 
 say "Fetching the app ($BRANCH)"
 if [ -d "$DIR/.git" ]; then
-  git -C "$DIR" fetch -q origin "$BRANCH" && git -C "$DIR" checkout -q "$BRANCH" && git -C "$DIR" reset -q --hard "origin/$BRANCH"
+  git -C "$DIR" fetch -q origin "$BRANCH" && git -C "$DIR" checkout -q "$BRANCH" && git -C "$DIR" merge -q --ff-only "origin/$BRANCH" \
+    || echo "Could not update from GitHub (private repo without credentials?) - using the code already here."
 else
   git clone -q -b "$BRANCH" "$REPO" "$DIR"
 fi
@@ -38,7 +47,6 @@ cd "$DIR"
 
 if [ -f .env ]; then
   say "Keeping existing settings in $DIR/.env"
-  # shellcheck disable=SC1091
   DOMAIN=$(grep -E '^DOMAIN=' .env | cut -d= -f2-)
 else
   IP=$(curl -fsS4 https://api.ipify.org || true)
