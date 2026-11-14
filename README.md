@@ -46,7 +46,15 @@ Full flow descriptions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - A domain name pointing at the server (Bitrix24 only talks to HTTPS; Caddy gets a free certificate).
 - A Bitrix24 portal where you are an administrator.
 
-## Install
+## Quick install (fresh Ubuntu VPS, ~10 minutes)
+```bash
+curl -fsSL https://raw.githubusercontent.com/averlonworld/bitrix24-whatsapp/feature/whatsapp-qr-connector/deploy/install.sh | sudo bash
+```
+It installs Docker, shows you the exact URLs to paste into Bitrix24's Local application form,
+asks for the client_id / client_secret, and starts everything with HTTPS. No domain needed: it
+uses `<server-ip>.sslip.io` with a real certificate unless you type your own.
+
+## Install (manual)
 
 ### 1. Register the app in Bitrix24
 In your portal: **Developer resources → Other → Local application** (or a Market app from a
