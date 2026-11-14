@@ -4,3 +4,6 @@ dist/
 *.log
 coverage/
 /media/
+/backups/
+wa-export-*.tar.gz
+.env.before-import.*

@@ -1,0 +1,11 @@
+# For servers where HTTPS is already handled by something else (nginx, a Cloudflare Tunnel, a load
+# balancer…) and ports 80/443 are taken. Caddy is not started; the app listens on 127.0.0.1 only.
+# Enable it by adding this line to .env (docker compose reads COMPOSE_FILE from .env):
+#   COMPOSE_FILE=docker-compose.yml:deploy/docker-compose.behind-proxy.yml
+# and point your proxy at http://127.0.0.1:${APP_PORT:-3010}. See docs/PRODUCTION.md.
+services:
+  app:
+    ports:
+      - "127.0.0.1:${APP_PORT:-3010}:3000"
+  caddy:
+    profiles: ["caddy"]
