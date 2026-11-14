@@ -137,7 +137,9 @@ async function registerOrUpdate(portal: Portal, family: 'bizproc.robot' | 'bizpr
   try {
     await call(portal, `${family}.add`, fields);
   } catch (err) {
-    if (err instanceof BitrixError && /exist|duplicate/i.test(`${err.code} ${err.description}`)) {
+    // Bitrix answers ERROR_ACTIVITY_ALREADY_INSTALLED ("Activity or Robot already installed!"). Update
+    // it then, so a changed public address reaches the handler instead of keeping the old one.
+    if (err instanceof BitrixError && /exist|duplicate|already/i.test(`${err.code} ${err.description}`)) {
       const { CODE, ...rest } = fields;
       await call(portal, `${family}.update`, { CODE, FIELDS: rest });
       return;
