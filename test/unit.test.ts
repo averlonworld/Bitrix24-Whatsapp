@@ -1,5 +1,6 @@
 import { proto } from 'baileys';
 import { describe, expect, it } from 'vitest';
+import { portalDomain } from '../src/bitrix/auth.js';
 import { parseCrmPlacement, parseDocumentId, timelineEntityType } from '../src/bitrix/crm.js';
 import { mediaKindFor } from '../src/bitrix/files.js';
 import { config } from '../src/config.js';
@@ -204,5 +205,12 @@ describe('KeyedMutex', () => {
     ]);
     expect(log.indexOf('a1')).toBeLessThan(log.indexOf('a2'));
     expect(log.indexOf('b1')).toBeLessThan(log.indexOf('a1'));
+  });
+});
+
+describe('portal domain', () => {
+  it('takes the portal host from the REST endpoint, not the OAuth server', () => {
+    expect(portalDomain('https://world.bitrix24.eu/rest/', 'oauth.bitrix.info')).toBe('world.bitrix24.eu');
+    expect(portalDomain('not a url', 'oauth.bitrix.info')).toBe('oauth.bitrix.info');
   });
 });

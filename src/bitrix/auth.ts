@@ -15,6 +15,14 @@ export interface EventAuth {
 
 export type AuthResult = { portal: Portal } | { portal: null; reason: string };
 
+export function portalDomain(clientEndpoint: string, fallback: string): string {
+  try {
+    return new URL(clientEndpoint).hostname || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * Trust an incoming Bitrix event (operator reply, robot, SMS provider, uninstall...).
  * Fast path: application_token matches the stored one. Fallback: the event's access_token works
@@ -51,7 +59,9 @@ export async function verifyAndStorePortal(input: {
   if (tokens.member_id !== input.memberId) throw new Error('member_id does not match the OAuth token');
   return upsertPortal({
     memberId: tokens.member_id,
-    domain: tokens.domain,
+    // The token response's `domain` is the OAuth server itself (oauth.bitrix.info), not the portal.
+    // The REST endpoint is always on the portal's own host, so take the domain from there.
+    domain: portalDomain(tokens.client_endpoint, tokens.domain),
     clientEndpoint: tokens.client_endpoint,
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
