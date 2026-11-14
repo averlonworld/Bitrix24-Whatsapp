@@ -75,11 +75,8 @@ Save, then copy the **client_id** and **client_secret** Bitrix shows.
 client_id/secret, generates all secrets and starts everything with HTTPS. No domain needed: it
 offers a free `<your-ip>.sslip.io` address.
 ```bash
-git clone -b feature/whatsapp-qr-connector https://github.com/averlonworld/Bitrix24-Whatsapp.git /opt/bitrix24-whatsapp
-sudo bash /opt/bitrix24-whatsapp/scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/averlonworld/Bitrix24-Whatsapp/feature/whatsapp-qr-connector/scripts/install.sh | sudo bash
 ```
-(The repository is private: `git clone` asks for your GitHub username and a personal access token
-as the password.)
 
 **Manual:**
 ```bash
