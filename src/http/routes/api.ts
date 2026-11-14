@@ -13,7 +13,7 @@ import {
   listNumbers,
   setGroupsEnabled,
 } from '../../db/numbers.js';
-import { exec, nowSec } from '../../db/pool.js';
+import { exec, many, nowSec } from '../../db/pool.js';
 import { setDefaultNumber } from '../../db/portals.js';
 import { logger } from '../../logger.js';
 import { crmQueue } from '../../queue/queues.js';
@@ -46,10 +46,58 @@ function publicNumber(n: WaNumber) {
 
 const notFound = { error: 'NOT_FOUND', message: 'Number not found' } as const;
 
+interface NumberStats {
+  received: number;
+  sent: number;
+  failed: number;
+  chats: number;
+  lastActivityAt: number | null;
+}
+
+/** Activity over the last 24 hours plus totals, for the dashboard cards. */
+async function statsFor(ids: string[]): Promise<Map<string, NumberStats>> {
+  const out = new Map<string, NumberStats>();
+  if (!ids.length) return out;
+  const since = nowSec() - 86_400;
+  const [msgs, chats] = await Promise.all([
+    many<{ number_id: string; received: string; sent: string; failed: string; last: string | null }>(
+      `SELECT number_id,
+              COUNT(*) FILTER (WHERE direction = 'in' AND created_at >= $2)                              AS received,
+              COUNT(*) FILTER (WHERE direction IN ('out','crm_out','phone_out') AND created_at >= $2)   AS sent,
+              COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= $2)                             AS failed,
+              MAX(created_at)                                                                            AS last
+         FROM message_log WHERE number_id = ANY($1::uuid[]) GROUP BY number_id`,
+      [ids, since],
+    ),
+    many<{ number_id: string; chats: string }>(
+      'SELECT number_id, COUNT(*) AS chats FROM chat_map WHERE number_id = ANY($1::uuid[]) GROUP BY number_id',
+      [ids],
+    ),
+  ]);
+  for (const id of ids) out.set(id, { received: 0, sent: 0, failed: 0, chats: 0, lastActivityAt: null });
+  for (const m of msgs) {
+    const s = out.get(m.number_id);
+    if (s) Object.assign(s, { received: Number(m.received), sent: Number(m.sent), failed: Number(m.failed), lastActivityAt: m.last ? Number(m.last) : null });
+  }
+  for (const ch of chats) {
+    const s = out.get(ch.number_id);
+    if (s) s.chats = Number(ch.chats);
+  }
+  return out;
+}
+
 apiRoutes.get('/api/state', async (c) => {
   const portal = c.get('portal');
   const numbers = await listNumbers(portal.id);
-  return c.json({ domain: portal.domain, defaultNumberId: portal.default_number_id, numbers: numbers.map(publicNumber) });
+  const stats = await statsFor(numbers.map((n) => n.id)).catch((err) => {
+    logger.warn({ err: (err as Error).message }, 'stats query failed');
+    return new Map<string, NumberStats>();
+  });
+  return c.json({
+    domain: portal.domain,
+    defaultNumberId: portal.default_number_id,
+    numbers: numbers.map((n) => ({ ...publicNumber(n), stats: stats.get(n.id) ?? null })),
+  });
 });
 
 apiRoutes.get('/api/lines', async (c) => {
@@ -57,6 +105,24 @@ apiRoutes.get('/api/lines', async (c) => {
     PARAMS: { select: ['ID', 'LINE_NAME'] },
   }).catch(() => []);
   return c.json({ lines: (lines ?? []).map((l) => ({ id: Number(l.ID), name: l.LINE_NAME || `Open Line ${l.ID}` })) });
+});
+
+/** One-click setup: creates a Contact Center Open Line so admins never have to leave the app. */
+apiRoutes.post('/api/lines', async (c) => {
+  const body = await c.req.json<{ name?: string }>().catch(() => ({}) as { name?: string });
+  const name = (body.name ?? '').trim().slice(0, 80) || 'WhatsApp';
+  try {
+    const id = await call<number | string>(c.get('portal'), 'imopenlines.config.add', { PARAMS: { LINE_NAME: name } });
+    const lineId = Number(id);
+    if (!Number.isInteger(lineId) || lineId <= 0) throw new Error('Bitrix24 did not return the new Open Line');
+    return c.json({ line: { id: lineId, name } }, 201);
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'open line creation failed');
+    return c.json(
+      { error: 'BITRIX', message: `Could not create the Open Line: ${(err as Error).message}. Only Bitrix24 administrators can create Open Lines.` },
+      502,
+    );
+  }
 });
 
 apiRoutes.post('/api/numbers', async (c) => {
