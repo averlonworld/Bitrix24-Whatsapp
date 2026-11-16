@@ -7,6 +7,7 @@ import { createApp } from './http/app.js';
 import { logger } from './logger.js';
 import { cleanupMedia } from './media/store.js';
 import { closeQueues, inboundQueue, startWorkers } from './queue/queues.js';
+import { startAlertWatchdog } from './sync/alerts.js';
 import { processCrmSend } from './sync/crmSend.js';
 import { onGaveUp } from './sync/failures.js';
 import { processInbound } from './sync/inbound.js';
@@ -52,6 +53,7 @@ async function main() {
 
   const cleanup = setInterval(() => void cleanupMedia().catch(() => undefined), 6 * 3600_000);
   void cleanupMedia().catch(() => undefined);
+  const watchdog = startAlertWatchdog();
 
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -59,6 +61,7 @@ async function main() {
     stopping = true;
     logger.info({ signal }, 'shutting down');
     clearInterval(cleanup);
+    clearInterval(watchdog);
     server.close();
     await Promise.allSettled(workers.map((w) => w.close()));
     await engine.shutdown();

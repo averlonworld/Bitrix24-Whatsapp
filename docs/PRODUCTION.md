@@ -59,9 +59,20 @@ then `cloudflared tunnel route dns <tunnel-id> whatsapp.example.com` and
   your provider's snapshot backups, or sync the folder to object storage on a schedule.
 - Restore: `bash scripts/restore.sh backups/wa-YYYYMMDD-HHMMSS.sql.gz`
 
+## Access control
+- Only **Bitrix24 administrators** can link, unlink, rename or configure numbers and see QR codes.
+  This is checked on every app open and enforced by the server. Other employees see a read-only
+  dashboard, and can still message clients from the WhatsApp tab in CRM records.
+
 ## Monitoring
-- `https://DOMAIN/health` returns `{"ok":true}` while the app runs. Add it to a free uptime monitor
-  (UptimeRobot, Better Stack…) to get an email or SMS when it goes down.
+- **Disconnect alerts:** when a linked number is logged out on the phone, disconnected, or stuck
+  reconnecting for 10 minutes, every administrator who has opened the app gets a Bitrix24
+  notification, and another one when it is back online. Needs the `im` permission.
+- **Missing permissions:** the app compares what the portal granted with what it needs and shows
+  administrators a red banner with the fix (add the permission, Save, Reinstall).
+- `https://DOMAIN/health?deep=1` returns `{"ok":true,"db":true,"redis":true}` (HTTP 503 if the
+  database or Redis is down). Add it to a free uptime monitor (UptimeRobot, Better Stack…) to get
+  an email or SMS when anything fails. Plain `/health` only proves the web server is up.
 - Logs: `cd /opt/bitrix24-whatsapp && docker compose logs -f app`. They rotate at 5 × 10 MB per
   container, so they can never fill the disk.
 - Number status (online, logged out…) is shown in the app. The phone must come online at least

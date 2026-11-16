@@ -28,7 +28,20 @@ export const getNumberByLine = (portalId: string, lineId: number) =>
   one<WaNumber>('SELECT * FROM wa_numbers WHERE portal_id=$1 AND line_id=$2', [portalId, lineId]);
 
 export const setNumberStatus = (id: string, status: NumberStatus, error: string | null = null) =>
-  exec('UPDATE wa_numbers SET status=$1, last_error=$2, updated_at=$3 WHERE id=$4', [status, error, nowSec(), id]);
+  exec(
+    `UPDATE wa_numbers SET status=$1::text, last_error=$2, updated_at=$3,
+            status_changed_at = CASE WHEN status IS DISTINCT FROM $1::text OR status_changed_at IS NULL THEN $3 ELSE status_changed_at END
+      WHERE id=$4`,
+    [status, error, nowSec(), id],
+  );
+
+/** Which problem admins were last alerted about (null once it is resolved). */
+export const setAlertedStatus = (id: string, status: string | null) =>
+  exec('UPDATE wa_numbers SET alerted_status=$1 WHERE id=$2', [status, id]);
+
+/** Every number of every active portal, for the alert watchdog. */
+export const listActiveNumbers = () =>
+  many<WaNumber>(`SELECT n.* FROM wa_numbers n JOIN portals p ON p.id = n.portal_id WHERE p.status = 'active' ORDER BY n.created_at`);
 
 export const setNumberPhone = (id: string, phone: string) =>
   exec('UPDATE wa_numbers SET phone=$1, updated_at=$2 WHERE id=$3', [phone, nowSec(), id]);

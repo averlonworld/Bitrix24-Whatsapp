@@ -194,12 +194,16 @@ function switchCtl(o) {
 `;
 
 export const ADMIN_JS = String.raw`
-var state = { numbers: [], lines: [], defaultNumberId: null, loaded: false, error: null };
+var ADMIN = !!BOOT.isAdmin;
+var state = { numbers: [], lines: [], defaultNumberId: null, missingScopes: [], loaded: false, error: null };
+var SCOPE_NAMES = { im: 'Chat and notifications (im)', imconnector: 'External messenger connectors (imconnector)', imopenlines: 'Open Channels (imopenlines)',
+  crm: 'CRM (crm)', placement: 'Application embedding (placement)', bizproc: 'Business Processes (bizproc)', messageservice: 'Messaging service (messageservice)' };
 
 function load() {
   return Promise.all([api('GET', '/api/state'), api('GET', '/api/lines').catch(function () { return { lines: [] }; })])
     .then(function (r) {
       state.numbers = r[0].numbers; state.defaultNumberId = r[0].defaultNumberId; state.lines = r[1].lines || [];
+      state.missingScopes = r[0].missingScopes || [];
       state.loaded = true; state.error = null; render();
     })
     .catch(function (e) { state.error = e.message; state.loaded = true; render(); });
@@ -433,11 +437,12 @@ function header() {
     h('div', { 'class': 'titles' }, [h('h1', { text: 'WhatsApp' }), h('p', { text: 'Your WhatsApp numbers, connected to Contact Center and CRM.' })]),
     total ? h('span', { 'class': 'summary' }, [h('span', { 'class': 'dot ' + (online === total ? 'ok' : online ? 'warn' : 'bad') }),
       online + ' of ' + total + (total === 1 ? ' number' : ' numbers') + ' online']) : null,
-    total ? h('button', { 'class': 'btn primary', onclick: startAdd }, [icon('plus', 'sm'), 'Add number']) : null
+    total && ADMIN ? h('button', { 'class': 'btn primary', onclick: startAdd }, [icon('plus', 'sm'), 'Add number']) : null
   ]);
 }
 
 function guide() {
+  if (!ADMIN) return null;
   var linked = state.numbers.filter(function (n) { return n.phone; });
   var unrouted = linked.filter(function (n) { return !n.line_id; })[0];
   var steps = [
@@ -464,6 +469,11 @@ function guide() {
 }
 
 function problem(n) {
+  var el = problemAlert(n);
+  if (el && !ADMIN) Array.prototype.slice.call(el.querySelectorAll('button')).forEach(function (b) { b.parentNode.removeChild(b); });
+  return el;
+}
+function problemAlert(n) {
   var s = live(n);
   var detail = n.last_error ? ' (' + n.last_error + ')' : '';
   if (s === 'new') return h('div', { 'class': 'alert info' }, [icon('qr'), h('div', { 'class': 'grow' }, [h('b', { text: 'Not linked yet' }), 'Scan a QR code with WhatsApp on the phone to start receiving chats.']),
@@ -490,7 +500,7 @@ function stats(n) {
 }
 
 function lineField(n) {
-  var sel = h('select', { 'aria-label': 'Open Line', onchange: function () {
+  var sel = h('select', { 'aria-label': 'Open Line', disabled: !ADMIN, onchange: function () {
     if (sel.value === '__new') { sel.value = n.line_id ? String(n.line_id) : ''; return routeStep(n, { create: true }); }
     setLine(n, sel.value ? Number(sel.value) : null);
   } }, [h('option', { value: '', text: n.line_id ? 'Not connected (stop routing)' : 'Choose an Open Line…' })]);
@@ -527,22 +537,22 @@ function numberCard(n) {
       h('div', { 'class': 'avatar ' + (x.t === 'ok' ? '' : x.t) }, [icon('wa'), h('span', { 'class': 'dot ' + x.t })]),
       h('div', { 'class': 'who' }, [
         h('div', { 'class': 'name-row' }, [nameEl,
-          h('button', { 'class': 'btn ghost icon rename', 'aria-label': 'Rename', title: 'Rename', style: 'width:28px;height:28px', onclick: function () { rename(n, nameEl); } }, [icon('pencil', 'sm')]),
+          !ADMIN ? null : h('button', { 'class': 'btn ghost icon rename', 'aria-label': 'Rename', title: 'Rename', style: 'width:28px;height:28px', onclick: function () { rename(n, nameEl); } }, [icon('pencil', 'sm')]),
           isDefault ? h('span', { 'class': 'chip star', title: 'Used by CRM, robots and SMS when no number is chosen' }, [icon('star'), 'Default']) : null]),
         h('div', { 'class': 'sub-row' }, [h('span', { text: n.phone ? fmtPhone(n.phone) : 'No phone linked' }), h('span', { 'class': 'sep' }), stateTag(s),
           n.line_id ? h('span', { 'class': 'sep' }) : null, n.line_id ? h('span', { text: lineName(n.line_id) }) : null])
       ]),
-      menu(items)
+      ADMIN ? menu(items) : null
     ]),
     problem(n),
     stats(n),
     !n.phone ? null : h('div', { 'class': 'settings' }, [
       lineField(n),
       h('div', { 'class': 'toggles' }, [
-        switchCtl({ title: 'Forward group chats', text: 'WhatsApp groups also appear in Contact Center.', checked: n.groups_enabled,
+        switchCtl({ title: 'Forward group chats', text: 'WhatsApp groups also appear in Contact Center.', checked: n.groups_enabled, disabled: !ADMIN,
           onchange: function (v) { act(api('POST', '/api/numbers/' + n.id + '/groups', { enabled: v }), v ? 'Group chats will be forwarded.' : 'Group chats will no longer be forwarded.'); } }),
         switchCtl({ title: 'Default number', text: isDefault ? 'Used by CRM, robots and SMS when no number is chosen.' : 'Use for CRM, robots and SMS when no number is chosen.',
-          checked: isDefault, disabled: isDefault,
+          checked: isDefault, disabled: isDefault || !ADMIN,
           onchange: function () { act(api('POST', '/api/numbers/' + n.id + '/default'), n.label + ' is now the default number.'); } })
       ])
     ])
@@ -563,7 +573,8 @@ function emptyState() {
     h('div', { 'class': 'art' }, [icon('wa')]),
     h('h2', { text: 'Connect your first WhatsApp number' }),
     h('p', { text: 'Link a WhatsApp or WhatsApp Business number by QR code. Chats arrive in Contact Center and your team replies from Bitrix24.' }),
-    h('button', { 'class': 'btn primary lg', onclick: startAdd }, [icon('plus'), 'Link WhatsApp number']),
+    ADMIN ? h('button', { 'class': 'btn primary lg', onclick: startAdd }, [icon('plus'), 'Link WhatsApp number'])
+      : h('p', { 'class': 'muted', style: 'margin:0', text: 'Ask a Bitrix24 administrator to link a number.' }),
     h('div', { 'class': 'ticks' }, [
       h('span', {}, [icon('check', 'sm'), 'Set up in about a minute']),
       h('span', {}, [icon('check', 'sm'), 'No Meta approval needed']),
@@ -577,6 +588,11 @@ function render() {
   app.appendChild(header());
   if (state.error) app.appendChild(h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'), h('div', { 'class': 'grow' }, [h('b', { text: 'Something went wrong' }), state.error]),
     h('button', { 'class': 'btn sm', text: 'Try again', onclick: load })]));
+  if (!ADMIN) app.appendChild(h('div', { 'class': 'alert info', style: 'margin:0 0 14px' }, [icon('info'),
+    h('div', { 'class': 'grow' }, [h('b', { text: 'View only' }), 'Only Bitrix24 administrators can link numbers or change these settings. You can still message clients from the WhatsApp tab in any CRM record.'])]));
+  if (ADMIN && state.missingScopes.length) app.appendChild(h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'),
+    h('div', { 'class': 'grow' }, [h('b', { text: 'Bitrix24 permission missing: ' + state.missingScopes.map(function (x) { return SCOPE_NAMES[x] || x; }).join(', ') }),
+      'Some features fail without it (for example: messages typed on the phone, copies of CRM sends in the chat, disconnect alerts). Fix: Developer resources → Integrations → this app → Edit → Assign permissions → add it → Save → Reinstall.'])]));
   if (!state.numbers.length) {
     if (!state.error) app.appendChild(emptyState());
     app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
@@ -613,6 +629,12 @@ function render(numbers) {
     return fit();
   }
   var current = numbers.filter(function (n) { return n.line_id === lineId; })[0] || null;
+  if (!BOOT.isAdmin) {
+    app.appendChild(h('div', { 'class': 'alert info' }, [icon('info'), h('div', { 'class': 'grow', text: current
+      ? 'This Open Line receives chats from "' + current.label + '" (' + fmtPhone(current.phone) + '). Only Bitrix24 administrators can change it.'
+      : 'No WhatsApp number feeds this Open Line. Only Bitrix24 administrators can change it.' })]));
+    return fit();
+  }
   if (picked === null) picked = current ? current.id : numbers[0].id;
   var rows = [];
   var save = h('button', { 'class': 'btn primary', text: 'Save' });

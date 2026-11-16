@@ -21,11 +21,16 @@ import { ensureChat } from '../../sync/openlines.js';
 import type { WaNumber } from '../../types.js';
 import { normalizePhone } from '../../util/phone.js';
 import { getEngine } from '../../whatsapp/instance.js';
-import { requireSession, type ApiEnv } from '../session.js';
+import { missingScopes } from '../../bitrix/scopes.js';
+import { requireAdmin, requireSession, type ApiEnv } from '../session.js';
 
 /** JSON API for the admin page, the connector-settings frame and the CRM tab. */
 export const apiRoutes = new Hono<ApiEnv>();
 apiRoutes.use('/api/*', requireSession);
+// Everything that links, unlinks, configures a number or shows its QR code is admin-only. Reading
+// the dashboard and the CRM tab (open chat / send) stay available to every employee.
+apiRoutes.use('/api/numbers/*', requireAdmin);
+apiRoutes.on('POST', ['/api/numbers', '/api/lines'], requireAdmin);
 
 const MAX_NUMBERS_PER_PORTAL = 50;
 
@@ -93,8 +98,11 @@ apiRoutes.get('/api/state', async (c) => {
     logger.warn({ err: (err as Error).message }, 'stats query failed');
     return new Map<string, NumberStats>();
   });
+  const isAdmin = c.get('isAdmin');
   return c.json({
     domain: portal.domain,
+    isAdmin,
+    missingScopes: isAdmin ? await missingScopes(portal) : [],
     defaultNumberId: portal.default_number_id,
     numbers: numbers.map((n) => ({ ...publicNumber(n), stats: stats.get(n.id) ?? null })),
   });

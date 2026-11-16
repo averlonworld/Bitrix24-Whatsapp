@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
+import { one } from '../db/pool.js';
 import { logger } from '../logger.js';
+import { inboundQueue } from '../queue/queues.js';
 import { apiRoutes } from './routes/api.js';
 import { automationRoutes } from './routes/automation.js';
 import { eventRoutes } from './routes/events.js';
@@ -9,7 +11,17 @@ import { mediaRoutes } from './routes/media.js';
 export function createApp() {
   const app = new Hono();
 
-  app.get('/health', (c) => c.json({ ok: true }));
+  // Light check for Docker. `?deep=1` also proves PostgreSQL and Redis answer - use it for uptime monitors.
+  app.get('/health', async (c) => {
+    if (c.req.query('deep') === undefined) return c.json({ ok: true });
+    const checks = { db: false, redis: false };
+    await one('SELECT 1').then(() => (checks.db = true), () => undefined);
+    await inboundQueue()
+      .getJobCounts('waiting')
+      .then(() => (checks.redis = true), () => undefined);
+    const ok = checks.db && checks.redis;
+    return c.json({ ok, ...checks }, ok ? 200 : 503);
+  });
   app.route('/', eventRoutes);
   app.route('/', automationRoutes);
   app.route('/', apiRoutes);

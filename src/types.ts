@@ -27,6 +27,8 @@ export interface WaNumber {
   groups_enabled: boolean;
   created_at: number;
   updated_at: number;
+  status_changed_at: number | null;
+  alerted_status: string | null;
 }
 
 export interface ChatMapRow {

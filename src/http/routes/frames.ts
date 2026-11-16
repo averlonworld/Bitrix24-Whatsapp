@@ -1,9 +1,10 @@
 import { Hono, type Context } from 'hono';
-import { verifyAndStorePortal } from '../../bitrix/auth.js';
+import { verifyAppOpen, type Viewer } from '../../bitrix/auth.js';
 import { bindIdempotent, call } from '../../bitrix/client.js';
 import { parseCrmPlacement } from '../../bitrix/crm.js';
 import { ensureRegistered } from '../../bitrix/registration.js';
 import { config } from '../../config.js';
+import { forgetAdmin, recordAdmin } from '../../db/admins.js';
 import { listNumbers } from '../../db/numbers.js';
 import { logger } from '../../logger.js';
 import type { Portal } from '../../types.js';
@@ -46,15 +47,20 @@ async function readFrame(c: Context): Promise<FramePayload | null> {
 }
 
 /** Verified with oauth.bitrix.info - see bitrix/auth.ts. Throws on a forged or stale frame. */
-async function portalFor(c: Context, { install = false } = {}): Promise<{ portal: Portal; frame: FramePayload } | Response> {
+async function portalFor(c: Context, { install = false } = {}): Promise<{ portal: Portal; frame: FramePayload; viewer: Viewer } | Response> {
   const frame = await readFrame(c);
   if (!frame) return c.text('Open this application from inside your Bitrix24 portal.', 400);
   let portal: Portal;
+  let viewer: Viewer;
   try {
-    portal = await verifyAndStorePortal({ memberId: frame.member_id, refreshToken: frame.REFRESH_ID });
+    ({ portal, viewer } = await verifyAppOpen({ memberId: frame.member_id, refreshToken: frame.REFRESH_ID }));
   } catch (err) {
     logger.warn({ err: (err as Error).message }, 'frame verification failed');
     return c.text('Could not verify this Bitrix24 session. Reload the page.', 403);
+  }
+  if (viewer.userId) {
+    const remember = viewer.isAdmin ? recordAdmin(portal.id, viewer.userId) : forgetAdmin(portal.id, viewer.userId);
+    await remember.catch((err) => logger.warn({ err: (err as Error).message }, 'could not record viewer'));
   }
   try {
     await ensureRegistered(portal, { force: install });
@@ -69,7 +75,7 @@ async function portalFor(c: Context, { install = false } = {}): Promise<{ portal
       .then(() => call(portal, 'event.test', {}))
       .catch((err) => logger.warn({ err: (err as Error).message }, 'event self-test failed'));
   }
-  return { portal, frame };
+  return { portal, frame, viewer };
 }
 
 /** After a reinstall, numbers that still hold a valid login reconnect by themselves. */
@@ -79,9 +85,16 @@ async function resumeNumbers(portal: Portal) {
   }
 }
 
-function page(c: Context, portal: Portal, view: View, placement: unknown) {
+function page(c: Context, portal: Portal, viewer: Viewer, view: View, placement: unknown) {
   return c.html(
-    renderPage(view, { session: issueSession(portal.id), view, placement, domain: portal.domain, appVersion: process.env.npm_package_version ?? '0.1.0' }),
+    renderPage(view, {
+      session: issueSession(portal.id, viewer),
+      isAdmin: viewer.isAdmin,
+      view,
+      placement,
+      domain: portal.domain,
+      appVersion: process.env.npm_package_version ?? '0.1.0',
+    }),
     200,
     { 'Cache-Control': 'no-store' },
   );
@@ -96,13 +109,13 @@ frameRoutes.post('/install', async (c) => {
 frameRoutes.post('/', async (c) => {
   const r = await portalFor(c);
   if (r instanceof Response) return r;
-  return page(c, r.portal, 'admin', null);
+  return page(c, r.portal, r.viewer, 'admin', null);
 });
 
 frameRoutes.post('/connector/settings', async (c) => {
   const r = await portalFor(c);
   if (r instanceof Response) return r;
-  const { portal, frame } = r;
+  const { portal, frame, viewer } = r;
   let lineId: number | null = null;
   try {
     const opts = JSON.parse(frame.PLACEMENT_OPTIONS ?? '{}') as { LINE?: string | number };
@@ -110,14 +123,14 @@ frameRoutes.post('/connector/settings', async (c) => {
   } catch {
     lineId = null;
   }
-  return page(c, portal, 'connector-settings', lineId ? { lineId } : null);
+  return page(c, portal, viewer, 'connector-settings', lineId ? { lineId } : null);
 });
 
 frameRoutes.post('/crm/tab', async (c) => {
   const r = await portalFor(c);
   if (r instanceof Response) return r;
-  const { portal, frame } = r;
-  return page(c, portal, 'crm-tab', parseCrmPlacement(frame.PLACEMENT, frame.PLACEMENT_OPTIONS));
+  const { portal, frame, viewer } = r;
+  return page(c, portal, viewer, 'crm-tab', parseCrmPlacement(frame.PLACEMENT, frame.PLACEMENT_OPTIONS));
 });
 
 // Bitrix's app form checks every URL with a plain GET before it lets you save.

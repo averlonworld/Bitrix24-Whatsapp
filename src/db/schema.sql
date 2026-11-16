@@ -80,3 +80,16 @@ CREATE TABLE IF NOT EXISTS message_log (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_wa ON message_log(number_id, direction, wa_message_id) WHERE wa_message_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_ext ON message_log(number_id, direction, ext_ref) WHERE ext_ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_msg_wa_any ON message_log(number_id, wa_message_id);
+
+-- Disconnect alerts: when a number's status last changed, and which problem admins were told about.
+ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS status_changed_at BIGINT;
+ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS alerted_status TEXT;
+
+-- Bitrix24 administrators seen opening the app. Who may manage numbers is checked on every app
+-- open; this list only decides who receives disconnect alerts.
+CREATE TABLE IF NOT EXISTS portal_admins (
+  portal_id     UUID NOT NULL REFERENCES portals(id) ON DELETE CASCADE,
+  user_id       INTEGER NOT NULL,
+  last_seen_at  BIGINT NOT NULL,
+  PRIMARY KEY (portal_id, user_id)
+);

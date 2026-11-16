@@ -1,7 +1,7 @@
 import { getPortalByMemberId, setApplicationToken, upsertPortal } from '../db/portals.js';
 import { safeEqual } from '../crypto.js';
 import type { Portal } from '../types.js';
-import { tokenWorks } from './client.js';
+import { rawCall, tokenWorks } from './client.js';
 import { exchangeRefreshToken } from './oauth.js';
 
 export interface EventAuth {
@@ -43,6 +43,43 @@ export async function authenticateEvent(auth: EventAuth | undefined): Promise<Au
   if (!(await tokenWorks(portal.client_endpoint, auth.access_token))) return { portal: null, reason: 'ACCESS_TOKEN_REJECTED' };
   if (auth.application_token) await setApplicationToken(portal.id, auth.application_token);
   return { portal: { ...portal, application_token: auth.application_token ?? portal.application_token } };
+}
+
+/** Who opened the app. Only administrators may manage numbers. */
+export interface Viewer {
+  userId: number | null;
+  isAdmin: boolean;
+}
+
+/** `profile` needs no extra scope and states the token owner's id and admin flag. */
+async function whoIs(endpoint: string, token: string): Promise<Viewer> {
+  const r = await rawCall<{ ID?: string | number; ADMIN?: boolean | string }>(endpoint, 'profile', {}, token);
+  if (r.error || !r.result) return { userId: null, isAdmin: false };
+  return { userId: Number(r.result.ID) || null, isAdmin: r.result.ADMIN === true || r.result.ADMIN === 'Y' };
+}
+
+/**
+ * Verify an app open (any employee) with Bitrix's OAuth server and tell whether the viewer is an
+ * administrator. Background REST calls run with the STORED tokens, so they are only replaced by an
+ * administrator's: a regular employee opening the app must not downgrade what registration,
+ * Open Line management and alerts are allowed to do.
+ */
+export async function verifyAppOpen(input: { memberId: string; refreshToken: string }): Promise<{ portal: Portal; viewer: Viewer }> {
+  const tokens = await exchangeRefreshToken(input.refreshToken);
+  if (tokens.member_id !== input.memberId) throw new Error('member_id does not match the OAuth token');
+  const viewer = await whoIs(tokens.client_endpoint, tokens.access_token);
+  const existing = await getPortalByMemberId(tokens.member_id);
+  if (existing && existing.status === 'active' && !viewer.isAdmin) return { portal: existing, viewer };
+  const portal = await upsertPortal({
+    memberId: tokens.member_id,
+    domain: portalDomain(tokens.client_endpoint, tokens.domain),
+    clientEndpoint: tokens.client_endpoint,
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token,
+    expiresIn: tokens.expires_in,
+    applicationToken: null,
+  });
+  return { portal, viewer };
 }
 
 /**
