@@ -5,6 +5,7 @@ import { inboundQueue } from '../queue/queues.js';
 import { apiRoutes } from './routes/api.js';
 import { automationRoutes } from './routes/automation.js';
 import { billingRoutes } from './routes/billing.js';
+import { legalRoutes } from './routes/legal.js';
 import { eventRoutes } from './routes/events.js';
 import { frameRoutes } from './routes/frames.js';
 import { mediaRoutes } from './routes/media.js';
@@ -24,6 +25,7 @@ export function createApp() {
     return c.json({ ok, ...checks }, ok ? 200 : 503);
   });
   app.route('/', billingRoutes);
+  app.route('/', legalRoutes);
   app.route('/', eventRoutes);
   app.route('/', automationRoutes);
   app.route('/', apiRoutes);

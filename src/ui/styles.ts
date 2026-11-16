@@ -246,7 +246,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand);b
 kbd{font:600 11px ui-monospace,Menlo,monospace;border:1px solid var(--line-2);border-bottom-width:2px;border-radius:4px;padding:0 4px;background:#fff}
 .hint-row{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--muted);font-size:12px}
 
-.foot{color:var(--faint);font-size:12px;text-align:center;margin-top:28px}
+.foot{color:var(--faint);font-size:12px;text-align:center;margin-top:28px}.foot a{color:var(--muted)}
 .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.grow{flex:1;min-width:0}.muted{color:var(--muted)}
 .help{font-size:12px;color:var(--muted);margin-top:6px}.help.warn{color:var(--warn-ink)}
 .st{display:inline-flex;align-items:center;gap:6px}.st .dot{width:8px;height:8px}

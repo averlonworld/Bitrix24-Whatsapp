@@ -110,7 +110,11 @@ var STATE = {
 };
 function st(s) { return STATE[s] || { t: 'idle', l: s }; }
 function stateTag(s) { var x = st(s); return h('span', { 'class': 'st' }, [h('span', { 'class': 'dot ' + x.t }), h('span', { 'class': 'state-txt ' + x.t, text: x.l })]); }
-function footer() { return h('div', { 'class': 'foot', text: 'WhatsApp connector for Bitrix24 · v' + (BOOT.appVersion || '') }); }
+function footer() {
+  return h('div', { 'class': 'foot' }, ['WhatsApp connector for Bitrix24 · v' + (BOOT.appVersion || '') + ' · ',
+    h('a', { href: '/legal/terms', target: '_blank', rel: 'noopener', text: 'Licence agreement' }), ' · ',
+    h('a', { href: '/legal/privacy', target: '_blank', rel: 'noopener', text: 'Privacy policy' })]);
+}
 
 /* ---------- toasts ---------- */
 var toasts = document.getElementById('toasts');
