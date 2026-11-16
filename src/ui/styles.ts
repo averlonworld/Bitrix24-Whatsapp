@@ -122,7 +122,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .field .help.warn{color:var(--warn-ink)}
 .toggles{display:flex;flex-direction:column;gap:14px}
 
-input[type=text],input[type=tel],select,textarea{width:100%;height:40px;border:1px solid var(--line-2);border-radius:var(--r-sm);
+input[type=text],input[type=tel],input[type=number],select,textarea{width:100%;height:40px;border:1px solid var(--line-2);border-radius:var(--r-sm);
   padding:0 12px;background:#fff;transition:border-color .15s,box-shadow .15s}
 select{appearance:none;-webkit-appearance:none;padding-right:34px;cursor:pointer;
   background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%23828b95'%3E%3Cpath d='M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4z'/%3E%3C/svg%3E") no-repeat right 10px center/18px}

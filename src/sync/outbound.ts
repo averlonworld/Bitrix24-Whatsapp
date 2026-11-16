@@ -1,4 +1,6 @@
 import type { Job } from 'bullmq';
+import { licenseOf, PAYMENT_REQUIRED_MESSAGE } from '../billing/license.js';
+import { postNote } from './openlines.js';
 import { fetchBitrixFile, mediaKindFor } from '../bitrix/files.js';
 import { findChatByChatId } from '../db/chats.js';
 import { claim, markFailed, markSent } from '../db/messages.js';
@@ -33,6 +35,10 @@ async function handle(data: OutboundJob): Promise<void> {
   const number = await getNumberByLine(portal.id, data.lineId);
   if (!number) {
     logger.warn({ lineId: data.lineId }, 'operator reply on a line with no WhatsApp number - dropped');
+    return;
+  }
+  if (!licenseOf(portal).canSend) {
+    await postNote(portal, data.bitrixChatId, `⚠️ Not delivered to WhatsApp. ${PAYMENT_REQUIRED_MESSAGE}`).catch(() => undefined);
     return;
   }
   const ref: DeliveryRef = {

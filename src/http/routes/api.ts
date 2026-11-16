@@ -26,6 +26,10 @@ import type { WaNumber } from '../../types.js';
 import { normalizePhone } from '../../util/phone.js';
 import { getEngine } from '../../whatsapp/instance.js';
 import { missingScopes } from '../../bitrix/scopes.js';
+import { billingEnabled, licenseOf, PAYMENT_REQUIRED_MESSAGE } from '../../billing/license.js';
+import { createCheckout, createPortalSession, setQuantity } from '../../billing/stripe.js';
+import { applySubscription } from '../../billing/sync.js';
+import { config } from '../../config.js';
 import type { Context } from 'hono';
 import { requireAdmin, requireSession, type ApiEnv } from '../session.js';
 
@@ -36,7 +40,7 @@ apiRoutes.use('/api/*', requireSession);
 //  - administrators: everything;
 //  - an employee: link / reconnect / unlink / rename / delete THEIR OWN WhatsApp number, and use
 //    company numbers plus their own in the CRM tab. Never a colleague's number or its QR code.
-apiRoutes.on(['POST', 'PUT'], ['/api/lines', '/api/settings'], requireAdmin);
+apiRoutes.on(['POST', 'PUT'], ['/api/lines', '/api/settings', '/api/billing/checkout', '/api/billing/portal', '/api/billing/seats'], requireAdmin);
 
 const MAX_NUMBERS_PER_PORTAL = 50;
 
@@ -135,6 +139,7 @@ apiRoutes.get('/api/state', async (c) => {
     userId,
     selfLinkEnabled: portal.self_link_enabled,
     missingScopes: isAdmin ? await missingScopes(portal) : [],
+    billing: { enabled: billingEnabled(), license: licenseOf(portal), numbersUsed: numbers.length, hasCustomer: !!portal.stripe_customer_id },
     defaultNumberId: portal.default_number_id,
     numbers: visible.map((n) => ({ ...publicNumber(n, names), stats: stats.get(n.id) ?? null })),
   });
@@ -165,6 +170,50 @@ apiRoutes.post('/api/lines', async (c) => {
   }
 });
 
+// ---- Billing (administrators) ----------------------------------------------------------------
+const billingReturn = () => `${config().publicUrl}/billing/return`;
+
+apiRoutes.post('/api/billing/checkout', async (c) => {
+  const portal = c.get('portal');
+  if (!billingEnabled()) return c.json({ error: 'BILLING_DISABLED', message: 'Billing is not set up on this server.' }, 400);
+  const body = await c.req.json<{ quantity?: number }>().catch(() => ({}) as { quantity?: number });
+  const used = (await listNumbers(portal.id)).length;
+  const quantity = Math.min(50, Math.max(1, Math.floor(Number(body.quantity) || used || 1)));
+  try {
+    const session = await createCheckout({ portalId: portal.id, customerId: portal.stripe_customer_id, quantity, returnUrl: billingReturn() });
+    return c.json({ url: session.url });
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'checkout failed');
+    return c.json({ error: 'STRIPE', message: `Could not start checkout: ${(err as Error).message}` }, 502);
+  }
+});
+
+apiRoutes.post('/api/billing/portal', async (c) => {
+  const portal = c.get('portal');
+  if (!portal.stripe_customer_id) return c.json({ error: 'NO_CUSTOMER', message: 'There is no subscription yet.' }, 400);
+  try {
+    return c.json({ url: (await createPortalSession(portal.stripe_customer_id, billingReturn())).url });
+  } catch (err) {
+    return c.json({ error: 'STRIPE', message: `Could not open billing: ${(err as Error).message}` }, 502);
+  }
+});
+
+apiRoutes.post('/api/billing/seats', async (c) => {
+  const portal = c.get('portal');
+  if (!portal.stripe_subscription_id) return c.json({ error: 'NO_SUBSCRIPTION', message: 'Subscribe first.' }, 400);
+  const body = await c.req.json<{ quantity?: number }>().catch(() => ({}) as { quantity?: number });
+  const used = (await listNumbers(portal.id)).length;
+  const quantity = Math.floor(Number(body.quantity));
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) return c.json({ error: 'BAD_REQUEST', message: 'Choose between 1 and 50 numbers.' }, 400);
+  if (quantity < used) return c.json({ error: 'BAD_REQUEST', message: `You have ${used} numbers. Remove some before lowering the plan to ${quantity}.` }, 400);
+  try {
+    await applySubscription(portal.id, await setQuantity(portal.stripe_subscription_id, quantity));
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: 'STRIPE', message: `Could not change the plan: ${(err as Error).message}` }, 502);
+  }
+});
+
 apiRoutes.put('/api/settings', async (c) => {
   const body = await c.req.json<{ selfLinkEnabled?: boolean }>().catch(() => ({}) as { selfLinkEnabled?: boolean });
   if (typeof body.selfLinkEnabled === 'boolean') await setSelfLinkEnabled(c.get('portal').id, body.selfLinkEnabled);
@@ -188,6 +237,18 @@ apiRoutes.post('/api/numbers', async (c) => {
     }
     const existing = await getOwnedNumber(portal.id, userId);
     if (existing) return c.json({ number: publicNumber(existing) }, 200);
+  }
+  const lic = licenseOf(portal);
+  if (!lic.canLink) {
+    const message = lic.state === 'past_due' ? 'The last payment failed. An administrator can update the card in Billing to add numbers.' : PAYMENT_REQUIRED_MESSAGE;
+    return c.json({ error: 'PAYMENT_REQUIRED', message }, 402);
+  }
+  if (lic.maxNumbers !== null && (await listNumbers(portal.id)).length >= lic.maxNumbers) {
+    const message =
+      lic.state === 'trial'
+        ? `The free trial includes up to ${lic.maxNumbers} WhatsApp numbers. Subscribe in Billing to add more.`
+        : `Your subscription covers ${lic.maxNumbers} WhatsApp number${lic.maxNumbers === 1 ? '' : 's'}. An administrator can add more in Billing.`;
+    return c.json({ error: 'PLAN_LIMIT', message }, 402);
   }
   const fallback = personal && userId ? ((await getUserName(portal.id, userId)) ?? 'My WhatsApp') : '';
   const label = ((body.label ?? '').trim() || fallback).slice(0, 60);
@@ -237,6 +298,7 @@ apiRoutes.post('/api/numbers/:id/personal-line', async (c) => {
 apiRoutes.post('/api/numbers/:id/connect', async (c) => {
   const n = await numberFor(c, 'manage');
   if (n instanceof Response) return n;
+  if (!licenseOf(c.get('portal')).canSend) return c.json({ error: 'PAYMENT_REQUIRED', message: PAYMENT_REQUIRED_MESSAGE }, 402);
   await getEngine().start(n.id);
   return c.json({ ok: true });
 });
@@ -252,6 +314,7 @@ apiRoutes.get('/api/numbers/:id/qr', async (c) => {
 apiRoutes.post('/api/numbers/:id/pairing-code', async (c) => {
   const n = await numberFor(c, 'manage');
   if (n instanceof Response) return n;
+  if (!licenseOf(c.get('portal')).canSend) return c.json({ error: 'PAYMENT_REQUIRED', message: PAYMENT_REQUIRED_MESSAGE }, 402);
   const body = await c.req.json<{ phone?: string }>().catch(() => ({}) as { phone?: string });
   const phone = normalizePhone(body.phone ?? '');
   if (!phone) return c.json({ error: 'BAD_REQUEST', message: 'Enter the phone number with country code' }, 400);

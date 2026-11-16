@@ -102,3 +102,25 @@ ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS personal_line BOOLEAN NOT NULL D
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_numbers_owner ON wa_numbers(portal_id, owner_user_id) WHERE owner_user_id IS NOT NULL;
 -- Employees may link their own WhatsApp themselves (admins can switch it off).
 ALTER TABLE portals ADD COLUMN IF NOT EXISTS self_link_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- Billing (Stripe, per linked WhatsApp number). trial_ends_at is set once, at first install.
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS trial_ends_at BIGINT;
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS sub_status TEXT;          -- Stripe status: active | past_due | canceled ...
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS sub_quantity INTEGER;     -- numbers paid for
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS sub_period_end BIGINT;
+UPDATE portals SET trial_ends_at = installed_at + 14 * 86400 WHERE trial_ends_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_portals_stripe_customer ON portals(stripe_customer_id);
+
+-- Bitrix24 REST calls (method, outcome, timing - never tokens or payloads). The Market asks
+-- server apps to keep at least 3 days of API request logs; rows are purged after 7.
+CREATE TABLE IF NOT EXISTS rest_log (
+  id          BIGSERIAL PRIMARY KEY,
+  portal_id   UUID,
+  method      TEXT NOT NULL,
+  error       TEXT,
+  ms          INTEGER NOT NULL,
+  created_at  BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rest_log_created ON rest_log(created_at);

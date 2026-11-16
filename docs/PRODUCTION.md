@@ -90,3 +90,35 @@ Re-running the installer pulls the latest code and rebuilds. Settings, data and 
 - Keep the OS patched: `apt install unattended-upgrades`.
 - `.env` and `backups/` are readable by root only. Never commit or share them.
 - Only PostgreSQL's and Redis's internal Docker network can reach them; no database port is published.
+
+## Selling it: billing with Stripe (Bitrix24 Market SaaS)
+Bitrix24 Market lets apps charge users for the external service themselves (in USD/EUR). This
+app bills **per linked WhatsApp number, monthly**, after a **14-day free trial** (up to
+`TRIAL_MAX_NUMBERS` numbers). Without Stripe keys billing is off and everything is unlimited.
+
+1. In Stripe: create a Product "WhatsApp for Bitrix24" with a **recurring, per-unit, monthly** price.
+   Copy its id (`price_...`) to `STRIPE_PRICE_ID`.
+2. Developers -> API keys: copy the secret key to `STRIPE_SECRET_KEY` (use test mode first).
+3. Developers -> Webhooks -> Add endpoint `https://DOMAIN/billing/stripe/webhook` with the events
+   `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
+   `customer.subscription.deleted`. Copy the signing secret to `STRIPE_WEBHOOK_SECRET`.
+4. Settings -> Billing -> Customer portal: enable it (invoices, update card, cancel).
+5. Put your own portal's member_id in `BILLING_EXEMPT_MEMBER_IDS` so it never needs to pay.
+6. `docker compose up -d app` to apply.
+
+How it behaves:
+- **Trial:** full features, up to `TRIAL_MAX_NUMBERS` numbers, for `TRIAL_DAYS` days from install.
+- **Subscribed:** as many numbers as paid for; admins change the quantity in the app (prorated) and
+  open Stripe's portal for invoices and card changes. Checkout opens in a new tab (Stripe cannot
+  run inside the Bitrix24 frame).
+- **Payment failed (past_due):** keeps working while Stripe retries, but no new numbers.
+- **Ended:** sending pauses (CRM tab, robots, SMS provider, operator replies get a note); incoming
+  messages still arrive so nothing is lost.
+
+## Uninstall and data deletion
+- Uninstalled with **"Clear application data"**: the WhatsApp devices are unlinked, the Stripe
+  subscription is cancelled, and all of the portal's data is deleted immediately.
+- Uninstalled without it: sockets stop and billing ends at the period end; data is kept 30 days so
+  a reinstall resumes without a new QR scan, then deleted automatically.
+- Bitrix24 REST calls (method, outcome, timing; never tokens or message data) are logged in the
+  `rest_log` table for 7 days (the Market asks for at least 3).

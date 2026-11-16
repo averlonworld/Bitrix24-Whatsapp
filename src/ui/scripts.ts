@@ -31,6 +31,7 @@ var ICONS = {
   phone: S('<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>'),
   qr: S('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v.01M14 21h7v-4"/>'),
   external: S('<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'),
+  bill: S('<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>'),
   clip: S('<path d="m21.4 11-8.5 8.5a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>'),
   user: S('<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>'),
   route: S('<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>')
@@ -207,6 +208,7 @@ function load() {
       state.numbers = r[0].numbers; state.defaultNumberId = r[0].defaultNumberId; state.lines = r[1].lines || [];
       state.missingScopes = r[0].missingScopes || [];
       state.userId = r[0].userId || null; state.selfLinkEnabled = r[0].selfLinkEnabled !== false;
+      state.billing = r[0].billing || { enabled: false };
       state.loaded = true; state.error = null; render();
     })
     .catch(function (e) { state.error = e.message; state.loaded = true; render(); });
@@ -223,6 +225,64 @@ function userIsBusy() {
 function lineName(id) { var l = state.lines.filter(function (x) { return x.id === id; })[0]; return l ? l.name : 'Open Line #' + id; }
 function lineOwner(lineId, exceptId) { return state.numbers.filter(function (n) { return n.line_id === lineId && n.id !== exceptId; })[0] || null; }
 function live(n) { return n.live_status || n.status; }
+/* ---------- billing (Stripe, per WhatsApp number) ---------- */
+function lic() { return (state.billing && state.billing.license) || { state: 'disabled' }; }
+function openExternal(url) {
+  var w = null; try { w = window.open(url, '_blank', 'noopener'); } catch (e) {}
+  if (!w) openModal([dlgHead('Continue in a new tab', 'Your browser blocked the new tab. Open it here:'),
+    h('div', { 'class': 'dlg-b' }, [h('a', { href: url, target: '_blank', rel: 'noopener', 'class': 'btn primary', text: 'Open secure payment page' })])], { narrow: true });
+}
+function billingGo(path, body, btn) {
+  busy(btn, true);
+  api('POST', path, body || {}).then(function (r) { if (r.url) openExternal(r.url); })
+    .catch(function (e) { toast(e.message, 'bad'); }).then(function () { busy(btn, false); });
+}
+function fmtDate(sec) { try { return new Date(sec * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); } catch (e) { return ''; } }
+function billingAlert() {
+  var L = lic(), used = state.billing && state.billing.numbersUsed || 0;
+  if (L.state === 'expired') return h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'), h('div', { 'class': 'grow' }, [h('b', { text: 'Your WhatsApp subscription has ended' }),
+    'Sending is paused for all numbers. Incoming messages still arrive. ' + (ADMIN ? 'Subscribe to continue.' : 'Ask a Bitrix24 administrator to renew it.')]),
+    ADMIN ? h('button', { 'class': 'btn primary sm', onclick: function (e) { billingGo('/api/billing/checkout', { quantity: Math.max(1, used) }, e.currentTarget); } }, [icon('bill', 'sm'), 'Subscribe']) : null]);
+  if (L.state === 'past_due' && ADMIN) return h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'), h('div', { 'class': 'grow' }, [h('b', { text: 'The last payment failed' }),
+    'WhatsApp keeps working while the payment is retried, but you cannot add numbers. Update your card to avoid interruption.']),
+    h('button', { 'class': 'btn primary sm', onclick: function (e) { billingGo('/api/billing/portal', null, e.currentTarget); } }, [icon('bill', 'sm'), 'Update card'])]);
+  if (L.state === 'trial' && ADMIN && L.trialDaysLeft <= 3) return h('div', { 'class': 'alert warn', style: 'margin:0 0 14px' }, [icon('bill'), h('div', { 'class': 'grow' }, [h('b', { text: 'Your free trial ends in ' + L.trialDaysLeft + (L.trialDaysLeft === 1 ? ' day' : ' days') }),
+    'Subscribe now so sending does not pause.']),
+    h('button', { 'class': 'btn primary sm', onclick: function (e) { billingGo('/api/billing/checkout', { quantity: Math.max(1, used) }, e.currentTarget); } }, ['Subscribe'])]);
+  return null;
+}
+function billingCard() {
+  var L = lic(), used = state.billing.numbersUsed || 0;
+  var title, sub, actions = [];
+  if (L.state === 'trial') {
+    title = 'Free trial · ' + L.trialDaysLeft + (L.trialDaysLeft === 1 ? ' day' : ' days') + ' left';
+    sub = 'Up to ' + L.maxNumbers + ' WhatsApp numbers during the trial (' + used + ' in use). After the trial you pay per linked number, monthly.';
+    actions.push(h('button', { 'class': 'btn primary', onclick: function (e) { billingGo('/api/billing/checkout', { quantity: Math.max(1, used) }, e.currentTarget); } }, [icon('bill', 'sm'), 'Subscribe']));
+  } else if (L.state === 'active' || L.state === 'past_due') {
+    title = (L.state === 'active' ? 'Subscribed' : 'Payment failed') + ' · ' + L.paidNumbers + (L.paidNumbers === 1 ? ' number' : ' numbers');
+    sub = used + ' of ' + L.paidNumbers + ' in use' + (L.periodEnd ? ' · next payment ' + fmtDate(L.periodEnd) : '') + '. Change the number of WhatsApp numbers at any time; the difference is prorated.';
+    var qty = h('input', { type: 'number', min: String(Math.max(1, used)), max: '50', value: String(L.paidNumbers || 1), style: 'width:90px', 'aria-label': 'Numbers paid for' });
+    var save = h('button', { 'class': 'btn', text: 'Update', onclick: function () {
+      var q = Number(qty.value);
+      if (q === L.paidNumbers) return;
+      confirmDialog({ title: 'Pay for ' + q + ' WhatsApp numbers?', text: 'Your subscription changes to ' + q + ' numbers. Stripe adds or credits the prorated difference on the next invoice.', ok: 'Change plan' })
+        .then(function (yes) { if (yes) act(api('POST', '/api/billing/seats', { quantity: q }), 'Plan updated to ' + q + ' numbers.'); });
+    } });
+    actions.push(h('div', { 'class': 'row' }, [qty, save]));
+    actions.push(h('button', { 'class': 'btn ghost', onclick: function (e) { billingGo('/api/billing/portal', null, e.currentTarget); } }, [icon('external', 'sm'), 'Invoices & card']));
+  } else if (L.state === 'expired') {
+    title = 'Subscription ended';
+    sub = 'Sending is paused. Subscribe to continue with ' + Math.max(1, used) + (used === 1 ? ' number.' : ' numbers.');
+    actions.push(h('button', { 'class': 'btn primary', onclick: function (e) { billingGo('/api/billing/checkout', { quantity: Math.max(1, used) }, e.currentTarget); } }, [icon('bill', 'sm'), 'Subscribe']));
+    if (state.billing.hasCustomer) actions.push(h('button', { 'class': 'btn ghost', onclick: function (e) { billingGo('/api/billing/portal', null, e.currentTarget); } }, [icon('external', 'sm'), 'Invoices']));
+  } else return null;
+  return h('div', { 'class': 'card pad', style: 'display:flex;gap:16px;align-items:center;flex-wrap:wrap' }, [
+    h('div', { 'class': 'fi', style: 'width:40px;height:40px;border-radius:10px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center' }, [icon('bill')]),
+    h('div', { 'class': 'grow', style: 'min-width:220px' }, [h('b', { text: title }), h('div', { 'class': 'muted', style: 'font-size:13px', text: sub })]),
+    h('div', { 'class': 'row' }, actions)
+  ]);
+}
+
 /* Sales team mode: a number may belong to one employee (their own WhatsApp). */
 function mine(n) { return n.owner_user_id != null && n.owner_user_id === state.userId; }
 function canManage(n) { return ADMIN || mine(n); }
@@ -661,12 +721,15 @@ function render() {
   app.appendChild(header());
   if (state.error) app.appendChild(h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'), h('div', { 'class': 'grow' }, [h('b', { text: 'Something went wrong' }), state.error]),
     h('button', { 'class': 'btn sm', text: 'Try again', onclick: load })]));
+  var ba = state.billing && state.billing.enabled ? billingAlert() : null; if (ba) app.appendChild(ba);
   if (!ADMIN) return renderMine();
   if (ADMIN && state.missingScopes.length) app.appendChild(h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'),
     h('div', { 'class': 'grow' }, [h('b', { text: 'Bitrix24 permission missing: ' + state.missingScopes.map(function (x) { return SCOPE_NAMES[x] || x; }).join(', ') }),
       'Some features fail without it (for example: messages typed on the phone, copies of CRM sends in the chat, disconnect alerts). Fix: Developer resources → Integrations → this app → Edit → Assign permissions → add it → Save → Reinstall.'])]));
   if (!state.numbers.length) {
     if (!state.error) app.appendChild(emptyState());
+    var bc0 = state.billing && state.billing.enabled ? billingCard() : null;
+    if (bc0) { app.appendChild(h('div', { 'class': 'section-h', text: 'Billing' })); app.appendChild(bc0); }
     app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
     app.appendChild(features());
     app.appendChild(footer());
@@ -682,6 +745,8 @@ function render() {
   app.appendChild(h('div', { 'class': 'section-h' }, ['Sales team', h('span', { 'class': 'count', text: String(team.length) })]));
   app.appendChild(teamCard(team.length));
   team.forEach(function (n) { app.appendChild(numberCard(n)); });
+  var bc = state.billing && state.billing.enabled ? billingCard() : null;
+  if (bc) { app.appendChild(h('div', { 'class': 'section-h', text: 'Billing' })); app.appendChild(bc); }
   app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
   app.appendChild(features());
   app.appendChild(footer());

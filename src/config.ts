@@ -26,6 +26,15 @@ export interface Config {
   mediaMaxAgeDays: number;
   sendMinIntervalMs: number;
   logLevel: string;
+  /** Billing (Stripe). Disabled when STRIPE_SECRET_KEY is empty: every portal is unlimited. */
+  stripeSecretKey: string;
+  stripeWebhookSecret: string;
+  /** Recurring per-unit monthly Price: quantity = number of WhatsApp numbers. */
+  stripePriceId: string;
+  trialDays: number;
+  trialMaxNumbers: number;
+  /** member_ids that never pay (e.g. the vendor's own portal), comma separated. */
+  billingExemptMemberIds: string[];
 }
 
 let cached: Config | null = null;
@@ -53,6 +62,15 @@ export function config(): Config {
     mediaMaxAgeDays: Number(optional('MEDIA_MAX_AGE_DAYS', '7')),
     sendMinIntervalMs: Number(optional('SEND_MIN_INTERVAL_MS', '1500')),
     logLevel: optional('LOG_LEVEL', 'info'),
+    stripeSecretKey: optional('STRIPE_SECRET_KEY', ''),
+    stripeWebhookSecret: optional('STRIPE_WEBHOOK_SECRET', ''),
+    stripePriceId: optional('STRIPE_PRICE_ID', ''),
+    trialDays: Number(optional('TRIAL_DAYS', '14')),
+    trialMaxNumbers: Number(optional('TRIAL_MAX_NUMBERS', '5')),
+    billingExemptMemberIds: optional('BILLING_EXEMPT_MEMBER_IDS', '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   };
   return cached;
 }

@@ -17,4 +17,10 @@ setConfigForTests({
   mediaMaxAgeDays: 7,
   sendMinIntervalMs: 0,
   logLevel: 'silent',
+  stripeSecretKey: '',
+  stripeWebhookSecret: '',
+  stripePriceId: '',
+  trialDays: 14,
+  trialMaxNumbers: 5,
+  billingExemptMemberIds: [],
 });

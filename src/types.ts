@@ -11,6 +11,12 @@ export interface Portal {
   default_number_id: string | null;
   status: string;
   self_link_enabled: boolean;
+  trial_ends_at: number | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  sub_status: string | null;
+  sub_quantity: number | null;
+  sub_period_end: number | null;
   installed_at: number;
   updated_at: number;
 }

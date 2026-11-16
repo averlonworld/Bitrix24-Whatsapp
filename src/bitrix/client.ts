@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { decrypt } from '../crypto.js';
 import { getPortalById, saveTokens } from '../db/portals.js';
-import { nowSec } from '../db/pool.js';
+import { exec, nowSec } from '../db/pool.js';
 import type { Portal } from '../types.js';
 import { exchangeRefreshToken } from './oauth.js';
 
@@ -63,6 +63,7 @@ export async function rawCall<T>(endpoint: string, method: string, params: Recor
 
 /** Call a REST method in application (OAuth) context, refreshing the token when needed. */
 export async function call<T = unknown>(portal: Portal, method: string, params: Record<string, unknown> = {}): Promise<T> {
+  const started = Date.now();
   let token =
     portal.access_expires_at > nowSec() ? decrypt(portal.access_token, config().tokenEncKey) : await refresh(portal);
   let res = await rawCall<T>(portal.client_endpoint, method, params, token);
@@ -70,6 +71,14 @@ export async function call<T = unknown>(portal: Portal, method: string, params: 
     token = await refresh(portal);
     res = await rawCall<T>(portal.client_endpoint, method, params, token);
   }
+  // Audit trail the Market requires (>= 3 days): method, outcome and timing - never tokens or data.
+  void exec('INSERT INTO rest_log (portal_id, method, error, ms, created_at) VALUES ($1, $2, $3, $4, $5)', [
+    portal.id,
+    method,
+    res.error ? `${res.error}: ${(res.error_description ?? '').slice(0, 200)}` : null,
+    Date.now() - started,
+    nowSec(),
+  ]).catch(() => undefined);
   if (res.error) throw new BitrixError(res.error, res.error_description ?? '', method);
   return res.result as T;
 }

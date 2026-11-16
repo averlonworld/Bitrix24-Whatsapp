@@ -1,6 +1,7 @@
 import type { Job } from 'bullmq';
 import { call } from '../bitrix/client.js';
 import { addTimelineComment } from '../bitrix/crm.js';
+import { licenseOf, PAYMENT_REQUIRED_MESSAGE } from '../billing/license.js';
 import { fetchPublicFile, mediaKindFor } from '../bitrix/files.js';
 import { SMS_PROVIDER_CODE } from '../bitrix/registration.js';
 import { findChat } from '../db/chats.js';
@@ -43,6 +44,7 @@ export async function processCrmSend(job: Job<CrmSendJob>): Promise<void> {
   const data = job.data;
   const portal = await getPortalById(data.portalId);
   if (!portal || portal.status !== 'active') return;
+  if (!licenseOf(portal).canSend) return reportFailure(portal, data, PAYMENT_REQUIRED_MESSAGE);
 
   const number = pickNumber(await listNumbers(portal.id), data, portal.default_number_id);
   if (!number) return reportFailure(portal, data, 'No WhatsApp number is connected in the WhatsApp app.');
