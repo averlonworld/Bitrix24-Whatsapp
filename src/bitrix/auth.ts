@@ -49,13 +49,15 @@ export async function authenticateEvent(auth: EventAuth | undefined): Promise<Au
 export interface Viewer {
   userId: number | null;
   isAdmin: boolean;
+  name?: string | null;
 }
 
 /** `profile` needs no extra scope and states the token owner's id and admin flag. */
 async function whoIs(endpoint: string, token: string): Promise<Viewer> {
-  const r = await rawCall<{ ID?: string | number; ADMIN?: boolean | string }>(endpoint, 'profile', {}, token);
-  if (r.error || !r.result) return { userId: null, isAdmin: false };
-  return { userId: Number(r.result.ID) || null, isAdmin: r.result.ADMIN === true || r.result.ADMIN === 'Y' };
+  const r = await rawCall<{ ID?: string | number; ADMIN?: boolean | string; NAME?: string; LAST_NAME?: string }>(endpoint, 'profile', {}, token);
+  if (r.error || !r.result) return { userId: null, isAdmin: false, name: null };
+  const name = [r.result.NAME, r.result.LAST_NAME].filter(Boolean).join(' ').trim() || null;
+  return { userId: Number(r.result.ID) || null, isAdmin: r.result.ADMIN === true || r.result.ADMIN === 'Y', name };
 }
 
 /**

@@ -11,6 +11,7 @@ import { logger } from '../logger.js';
 import type { CrmSendJob } from '../queue/queues.js';
 import type { Portal, WaNumber } from '../types.js';
 import { digitsOnly, normalizePhone } from '../util/phone.js';
+import { mediaUrl, readMedia } from '../media/store.js';
 import { getEngine } from '../whatsapp/instance.js';
 import { ensureChat, postNote } from './openlines.js';
 
@@ -61,7 +62,22 @@ export async function processCrmSend(job: Job<CrmSendJob>): Promise<void> {
   }
 
   let waId: string;
-  if (data.fileUrl) {
+  const attached = data.mediaKey ? await readMedia(data.mediaKey) : null;
+  if (data.mediaKey && !attached) {
+    await markFailed(c.row.id, 'FILE_EXPIRED');
+    return reportFailure(portal, data, 'The attached file is no longer available. Attach it again.');
+  }
+  if (attached) {
+    const kind = mediaKindFor(attached.meta.name, attached.meta.mime);
+    waId = await engine.sendMedia(number.id, jid, {
+      kind,
+      data: attached.data,
+      mime: attached.meta.mime,
+      fileName: attached.meta.name,
+      caption: kind === 'audio' ? undefined : data.text || undefined,
+    });
+    if (kind === 'audio' && data.text) waId = await engine.sendText(number.id, jid, data.text);
+  } else if (data.fileUrl) {
     const file = await fetchPublicFile(data.fileUrl);
     const name = decodeURIComponent(new URL(data.fileUrl).pathname.split('/').pop() || 'file');
     const kind = mediaKindFor(name, file.mime);
@@ -82,11 +98,13 @@ export async function processCrmSend(job: Job<CrmSendJob>): Promise<void> {
   await mirrorIntoChat(portal, number, phone, data).catch((err) =>
     logger.warn({ err: (err as Error).message }, 'could not mirror CRM send into the Open Line chat'),
   );
-  if (data.source === 'robot' && data.ref) {
+  if ((data.source === 'robot' || data.source === 'tab') && data.ref) {
+    const by = data.source === 'tab' && data.byName ? ` by ${data.byName}` : '';
+    const file = attached ? `\n📎 ${attached.meta.name}` : '';
     await addTimelineComment(
       portal,
       data.ref,
-      `WhatsApp message sent to +${phone}${number.phone ? ` from +${number.phone}` : ''}:\n${data.text}`,
+      `WhatsApp message sent to +${phone}${number.phone ? ` from +${number.phone}` : ''}${by}:\n${data.text}${file}`.trim(),
     ).catch(() => undefined);
   }
 }
@@ -96,7 +114,9 @@ async function mirrorIntoChat(portal: Portal, number: WaNumber, phone: string, d
   const existing = await findChat(number.id, phone);
   const chat = await ensureChat(portal, { ...number, line_id: number.line_id }, phone, null, existing);
   if (chat.bitrix_chat_id) {
-    await postNote(portal, chat.bitrix_chat_id, `📤 Sent from ${SOURCE_LABEL[data.source]}:\n${data.text}${data.fileUrl ? `\n${data.fileUrl}` : ''}`);
+    const by = data.byName ? ` by ${data.byName}` : '';
+    const file = data.mediaKey ? `\n📎 ${mediaUrl(data.mediaKey)}` : data.fileUrl ? `\n${data.fileUrl}` : '';
+    await postNote(portal, chat.bitrix_chat_id, `📤 Sent from ${SOURCE_LABEL[data.source]}${by}:\n${data.text}${file}`);
   }
 }
 

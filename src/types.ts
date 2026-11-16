@@ -10,6 +10,7 @@ export interface Portal {
   connector_version: number | null;
   default_number_id: string | null;
   status: string;
+  self_link_enabled: boolean;
   installed_at: number;
   updated_at: number;
 }
@@ -29,6 +30,8 @@ export interface WaNumber {
   updated_at: number;
   status_changed_at: number | null;
   alerted_status: string | null;
+  owner_user_id: number | null;
+  personal_line: boolean;
 }
 
 export interface ChatMapRow {

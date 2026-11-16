@@ -178,6 +178,8 @@ describe('number selection for CRM sends', () => {
     updated_at: 0,
     status_changed_at: null,
     alerted_status: null,
+    owner_user_id: null,
+    personal_line: false,
   });
   const nums = [n('a', 'Sales', '971500000001', 'disconnected'), n('b', 'Support', '971500000002')];
   it('honours explicit id, label, phone, default, then first connected', () => {

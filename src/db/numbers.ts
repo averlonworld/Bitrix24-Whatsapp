@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { NumberStatus, WaNumber } from '../types.js';
 import { exec, many, nowSec, one } from './pool.js';
 
-export async function createNumber(portalId: string, label: string): Promise<WaNumber> {
+export async function createNumber(portalId: string, label: string, ownerUserId: number | null = null): Promise<WaNumber> {
   const ts = nowSec();
   const row = await one<WaNumber>(
-    `INSERT INTO wa_numbers (id, portal_id, label, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'new',$4,$4) RETURNING *`,
-    [randomUUID(), portalId, label, ts],
+    `INSERT INTO wa_numbers (id, portal_id, label, owner_user_id, status, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'new',$5,$5) RETURNING *`,
+    [randomUUID(), portalId, label, ownerUserId, ts],
   );
   if (!row) throw new Error('number insert failed');
   return row;
@@ -63,3 +63,9 @@ export async function bindLine(portalId: string, id: string, lineId: number | nu
 }
 
 export const deleteNumber = (id: string) => exec('DELETE FROM wa_numbers WHERE id=$1', [id]);
+
+export const getOwnedNumber = (portalId: string, userId: number) =>
+  one<WaNumber>('SELECT * FROM wa_numbers WHERE portal_id=$1 AND owner_user_id=$2', [portalId, userId]);
+
+export const setPersonalLine = (id: string, lineId: number) =>
+  exec('UPDATE wa_numbers SET line_id=$1, personal_line=TRUE, updated_at=$2 WHERE id=$3', [lineId, nowSec(), id]);

@@ -4,7 +4,7 @@ import { bindIdempotent, call } from '../../bitrix/client.js';
 import { parseCrmPlacement } from '../../bitrix/crm.js';
 import { ensureRegistered } from '../../bitrix/registration.js';
 import { config } from '../../config.js';
-import { forgetAdmin, recordAdmin } from '../../db/admins.js';
+import { recordViewer } from '../../db/users.js';
 import { listNumbers } from '../../db/numbers.js';
 import { logger } from '../../logger.js';
 import type { Portal } from '../../types.js';
@@ -59,8 +59,9 @@ async function portalFor(c: Context, { install = false } = {}): Promise<{ portal
     return c.text('Could not verify this Bitrix24 session. Reload the page.', 403);
   }
   if (viewer.userId) {
-    const remember = viewer.isAdmin ? recordAdmin(portal.id, viewer.userId) : forgetAdmin(portal.id, viewer.userId);
-    await remember.catch((err) => logger.warn({ err: (err as Error).message }, 'could not record viewer'));
+    await recordViewer(portal.id, { userId: viewer.userId, name: viewer.name ?? null, isAdmin: viewer.isAdmin }).catch((err) =>
+      logger.warn({ err: (err as Error).message }, 'could not record viewer'),
+    );
   }
   try {
     await ensureRegistered(portal, { force: install });

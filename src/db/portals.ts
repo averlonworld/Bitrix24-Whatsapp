@@ -78,3 +78,6 @@ export const setDefaultNumber = (portalId: string, numberId: string | null) =>
 /** Bitrix drops the connector and placements on uninstall, so the remembered version is cleared too. */
 export const markUninstalled = (portalId: string) =>
   exec("UPDATE portals SET status='uninstalled', connector_version=NULL, updated_at=$1 WHERE id=$2", [nowSec(), portalId]);
+
+export const setSelfLinkEnabled = (portalId: string, enabled: boolean) =>
+  exec('UPDATE portals SET self_link_enabled=$1, updated_at=$2 WHERE id=$3', [enabled, nowSec(), portalId]);

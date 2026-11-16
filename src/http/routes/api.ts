@@ -9,12 +9,16 @@ import {
   bindLine,
   createNumber,
   deleteNumber,
+  getOwnedNumber,
   getPortalNumber,
   listNumbers,
   setGroupsEnabled,
+  setPersonalLine,
 } from '../../db/numbers.js';
+import { getUserName, userNames } from '../../db/users.js';
+import { saveMedia } from '../../media/store.js';
 import { exec, many, nowSec } from '../../db/pool.js';
-import { setDefaultNumber } from '../../db/portals.js';
+import { setDefaultNumber, setSelfLinkEnabled } from '../../db/portals.js';
 import { logger } from '../../logger.js';
 import { crmQueue } from '../../queue/queues.js';
 import { ensureChat } from '../../sync/openlines.js';
@@ -22,20 +26,22 @@ import type { WaNumber } from '../../types.js';
 import { normalizePhone } from '../../util/phone.js';
 import { getEngine } from '../../whatsapp/instance.js';
 import { missingScopes } from '../../bitrix/scopes.js';
+import type { Context } from 'hono';
 import { requireAdmin, requireSession, type ApiEnv } from '../session.js';
 
 /** JSON API for the admin page, the connector-settings frame and the CRM tab. */
 export const apiRoutes = new Hono<ApiEnv>();
 apiRoutes.use('/api/*', requireSession);
-// Everything that links, unlinks, configures a number or shows its QR code is admin-only. Reading
-// the dashboard and the CRM tab (open chat / send) stay available to every employee.
-apiRoutes.use('/api/numbers/*', requireAdmin);
-apiRoutes.on('POST', ['/api/numbers', '/api/lines'], requireAdmin);
+// Who may do what (enforced here, not just hidden in the UI):
+//  - administrators: everything;
+//  - an employee: link / reconnect / unlink / rename / delete THEIR OWN WhatsApp number, and use
+//    company numbers plus their own in the CRM tab. Never a colleague's number or its QR code.
+apiRoutes.on(['POST', 'PUT'], ['/api/lines', '/api/settings'], requireAdmin);
 
 const MAX_NUMBERS_PER_PORTAL = 50;
 
 /** Never expose keys or internals: this is all the browser sees of a number. */
-function publicNumber(n: WaNumber) {
+function publicNumber(n: WaNumber, names?: Map<number, string>) {
   const live = getEngine().status(n.id);
   return {
     id: n.id,
@@ -46,10 +52,30 @@ function publicNumber(n: WaNumber) {
     last_error: n.last_error,
     line_id: n.line_id,
     groups_enabled: n.groups_enabled,
+    owner_user_id: n.owner_user_id,
+    owner_name: n.owner_user_id ? (names?.get(n.owner_user_id) ?? null) : null,
+    personal_line: n.personal_line,
   };
 }
 
 const notFound = { error: 'NOT_FOUND', message: 'Number not found' } as const;
+const forbidden = { error: 'FORBIDDEN', message: 'Only Bitrix24 administrators or the owner of this number can do that.' } as const;
+
+const isOwn = (c: Context<ApiEnv>, n: WaNumber) => n.owner_user_id != null && n.owner_user_id === c.get('userId');
+
+/**
+ * Load a number of this portal and check the caller may act on it: 'manage' = admin or owner,
+ * 'admin' = administrators only (Open Line routing, groups, default number).
+ */
+async function numberFor(c: Context<ApiEnv>, access: 'manage' | 'admin'): Promise<WaNumber | Response> {
+  const n = await getPortalNumber(c.get('portal').id, c.req.param('id') ?? '');
+  if (!n) return c.json(notFound, 404);
+  if (c.get('isAdmin') || (access === 'manage' && isOwn(c, n))) return n;
+  return c.json(forbidden, 403);
+}
+
+/** In the CRM tab an employee sends from company numbers or their own, never a colleague's. */
+const canSendFrom = (c: Context<ApiEnv>, n: WaNumber) => c.get('isAdmin') || n.owner_user_id == null || isOwn(c, n);
 
 interface NumberStats {
   received: number;
@@ -99,12 +125,18 @@ apiRoutes.get('/api/state', async (c) => {
     return new Map<string, NumberStats>();
   });
   const isAdmin = c.get('isAdmin');
+  const userId = c.get('userId');
+  const names = await userNames(portal.id).catch(() => new Map<number, string>());
+  // Employees only see their own WhatsApp here; administrators see the whole team.
+  const visible = isAdmin ? numbers : numbers.filter((n) => n.owner_user_id != null && n.owner_user_id === userId);
   return c.json({
     domain: portal.domain,
     isAdmin,
+    userId,
+    selfLinkEnabled: portal.self_link_enabled,
     missingScopes: isAdmin ? await missingScopes(portal) : [],
     defaultNumberId: portal.default_number_id,
-    numbers: numbers.map((n) => ({ ...publicNumber(n), stats: stats.get(n.id) ?? null })),
+    numbers: visible.map((n) => ({ ...publicNumber(n, names), stats: stats.get(n.id) ?? null })),
   });
 });
 
@@ -133,37 +165,93 @@ apiRoutes.post('/api/lines', async (c) => {
   }
 });
 
+apiRoutes.put('/api/settings', async (c) => {
+  const body = await c.req.json<{ selfLinkEnabled?: boolean }>().catch(() => ({}) as { selfLinkEnabled?: boolean });
+  if (typeof body.selfLinkEnabled === 'boolean') await setSelfLinkEnabled(c.get('portal').id, body.selfLinkEnabled);
+  return c.json({ ok: true });
+});
+
 apiRoutes.post('/api/numbers', async (c) => {
   const portal = c.get('portal');
-  const body = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
-  const label = (body.label ?? '').trim().slice(0, 60);
+  const isAdmin = c.get('isAdmin');
+  const userId = c.get('userId');
+  const body = await c.req.json<{ label?: string; personal?: boolean }>().catch(() => ({}) as { label?: string; personal?: boolean });
+  // Employees can only add their own WhatsApp; admins add company numbers (or their own with personal).
+  const personal = !isAdmin || body.personal === true;
+  if (personal) {
+    if (!userId) return c.json({ error: 'UNAUTHORIZED', message: 'Reopen the app and try again.' }, 401);
+    if (!isAdmin && !portal.self_link_enabled) {
+      return c.json(
+        { error: 'SELF_LINK_DISABLED', message: 'Your administrator has not enabled linking your own WhatsApp. Ask them to switch it on in the WhatsApp app.' },
+        403,
+      );
+    }
+    const existing = await getOwnedNumber(portal.id, userId);
+    if (existing) return c.json({ number: publicNumber(existing) }, 200);
+  }
+  const fallback = personal && userId ? ((await getUserName(portal.id, userId)) ?? 'My WhatsApp') : '';
+  const label = ((body.label ?? '').trim() || fallback).slice(0, 60);
   if (!label) return c.json({ error: 'BAD_REQUEST', message: 'Give the number a name' }, 400);
   if ((await listNumbers(portal.id)).length >= MAX_NUMBERS_PER_PORTAL) {
     return c.json({ error: 'LIMIT', message: `At most ${MAX_NUMBERS_PER_PORTAL} numbers per portal` }, 400);
   }
-  const number = await createNumber(portal.id, label);
-  if (!portal.default_number_id) await setDefaultNumber(portal.id, number.id);
+  const number = await createNumber(portal.id, label, personal ? userId : null);
+  // A salesperson's own number never becomes the company default for robots and SMS.
+  if (!portal.default_number_id && !personal) await setDefaultNumber(portal.id, number.id);
   return c.json({ number: publicNumber(number) }, 201);
 });
 
+/**
+ * A salesperson's own number gets its own Open Line with only them in the queue, so a customer's
+ * reply reaches the person who wrote to them. Created once, right after the first link.
+ */
+apiRoutes.post('/api/numbers/:id/personal-line', async (c) => {
+  const portal = c.get('portal');
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
+  if (!n.owner_user_id) return c.json({ error: 'BAD_REQUEST', message: 'Only personal numbers get a personal Open Line.' }, 400);
+  if (n.line_id) return c.json({ line: { id: n.line_id, name: null } });
+  const owner = (await getUserName(portal.id, n.owner_user_id)) ?? n.label;
+  const name = `WhatsApp · ${owner}`.slice(0, 80);
+  try {
+    const id = await call<number | string | false>(portal, 'imopenlines.config.add', {
+      PARAMS: {
+        LINE_NAME: name,
+        QUEUE: [{ ENTITY_TYPE: 'user', ENTITY_ID: String(n.owner_user_id) }],
+        QUEUE_TYPE: 'all',
+        CRM: 'Y',
+        CRM_FORWARD: 'N', // stay with the number's owner, not whoever is responsible in CRM
+      },
+    });
+    const lineId = Number(id);
+    if (!Number.isInteger(lineId) || lineId <= 0) throw new Error('Bitrix24 did not create the Open Line');
+    await activateLine(portal, lineId, true);
+    await setPersonalLine(n.id, lineId);
+    return c.json({ line: { id: lineId, name } }, 201);
+  } catch (err) {
+    logger.warn({ err: (err as Error).message, numberId: n.id }, 'personal open line failed');
+    return c.json({ error: 'BITRIX', message: `Could not create your Open Line: ${(err as Error).message}. An administrator can choose one for you.` }, 502);
+  }
+});
+
 apiRoutes.post('/api/numbers/:id/connect', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   await getEngine().start(n.id);
   return c.json({ ok: true });
 });
 
 apiRoutes.get('/api/numbers/:id/qr', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   const live = getEngine().status(n.id);
   const qr = live.qr ? await QRCode.toDataURL(live.qr, { margin: 1, width: 256 }) : null;
   return c.json({ status: live.status === 'offline' ? n.status : live.status, qr, phone: n.phone, error: n.last_error });
 });
 
 apiRoutes.post('/api/numbers/:id/pairing-code', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   const body = await c.req.json<{ phone?: string }>().catch(() => ({}) as { phone?: string });
   const phone = normalizePhone(body.phone ?? '');
   if (!phone) return c.json({ error: 'BAD_REQUEST', message: 'Enter the phone number with country code' }, 400);
@@ -177,23 +265,23 @@ apiRoutes.post('/api/numbers/:id/pairing-code', async (c) => {
 });
 
 apiRoutes.post('/api/numbers/:id/disconnect', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   await getEngine().stop(n.id);
   return c.json({ ok: true });
 });
 
 apiRoutes.post('/api/numbers/:id/logout', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   await getEngine().logout(n.id);
   return c.json({ ok: true });
 });
 
 apiRoutes.delete('/api/numbers/:id', async (c) => {
   const portal = c.get('portal');
-  const n = await getPortalNumber(portal.id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   await getEngine().logout(n.id);
   if (n.line_id) await activateLine(portal, n.line_id, false).catch(() => undefined);
   if (portal.default_number_id === n.id) await setDefaultNumber(portal.id, null);
@@ -203,8 +291,8 @@ apiRoutes.delete('/api/numbers/:id', async (c) => {
 
 apiRoutes.post('/api/numbers/:id/line', async (c) => {
   const portal = c.get('portal');
-  const n = await getPortalNumber(portal.id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'admin');
+  if (n instanceof Response) return n;
   const body = await c.req.json<{ lineId?: number | null }>().catch(() => ({}) as { lineId?: number | null });
   const lineId = body.lineId == null ? null : Number(body.lineId);
   if (lineId !== null && (!Number.isInteger(lineId) || lineId <= 0)) return c.json({ error: 'BAD_REQUEST', message: 'Invalid line' }, 400);
@@ -220,8 +308,8 @@ apiRoutes.post('/api/numbers/:id/line', async (c) => {
 });
 
 apiRoutes.post('/api/numbers/:id/groups', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'admin');
+  if (n instanceof Response) return n;
   const body = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as { enabled?: boolean });
   await setGroupsEnabled(n.id, Boolean(body.enabled));
   return c.json({ ok: true });
@@ -229,15 +317,15 @@ apiRoutes.post('/api/numbers/:id/groups', async (c) => {
 
 apiRoutes.post('/api/numbers/:id/default', async (c) => {
   const portal = c.get('portal');
-  const n = await getPortalNumber(portal.id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'admin');
+  if (n instanceof Response) return n;
   await setDefaultNumber(portal.id, n.id);
   return c.json({ ok: true });
 });
 
 apiRoutes.post('/api/numbers/:id/label', async (c) => {
-  const n = await getPortalNumber(c.get('portal').id, c.req.param('id'));
-  if (!n) return c.json(notFound, 404);
+  const n = await numberFor(c, 'manage');
+  if (n instanceof Response) return n;
   const body = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
   const label = (body.label ?? '').trim().slice(0, 60);
   if (!label) return c.json({ error: 'BAD_REQUEST', message: 'Name required' }, 400);
@@ -260,7 +348,8 @@ apiRoutes.get('/api/crm/context', async (c) => {
   const ref = readRef(c.req.query());
   if (!ref) return c.json({ error: 'BAD_REQUEST', message: 'Missing CRM item' }, 400);
   const [phones, numbers] = await Promise.all([resolvePhones(portal, ref), listNumbers(portal.id)]);
-  const usable = numbers.filter((n) => n.phone);
+  const usable = numbers.filter((n) => n.phone && canSendFrom(c, n));
+  const mine = usable.find((n) => isOwn(c, n));
   const chats: Array<{ numberId: string; phone: string; bitrixChatId: number }> = [];
   for (const n of usable) {
     for (const p of phones) {
@@ -268,7 +357,14 @@ apiRoutes.get('/api/crm/context', async (c) => {
       if (chat?.bitrix_chat_id && chat.line_id === n.line_id) chats.push({ numberId: n.id, phone: p.phone, bitrixChatId: chat.bitrix_chat_id });
     }
   }
-  return c.json({ phones, numbers: usable.map(publicNumber).map((n) => ({ ...n, status: n.live_status })), chats, defaultNumberId: portal.default_number_id });
+  return c.json({
+    phones,
+    numbers: usable.map((n) => publicNumber(n)).map((n) => ({ ...n, status: n.live_status })),
+    chats,
+    // A salesperson sends from their own WhatsApp by default; everyone else from the company default.
+    defaultNumberId: mine?.id ?? portal.default_number_id,
+    myNumberId: mine?.id ?? null,
+  });
 });
 
 apiRoutes.post('/api/crm/open', async (c) => {
@@ -277,6 +373,7 @@ apiRoutes.post('/api/crm/open', async (c) => {
   const phone = normalizePhone(body?.phone ?? '');
   const n = body?.numberId ? await getPortalNumber(portal.id, body.numberId) : null;
   if (!n || !phone) return c.json({ error: 'BAD_REQUEST', message: 'Choose a number and a phone' }, 400);
+  if (!canSendFrom(c, n)) return c.json({ error: 'FORBIDDEN', message: 'You can only use company numbers or your own WhatsApp.' }, 403);
   if (!n.line_id) return c.json({ error: 'NOT_BOUND', message: 'This WhatsApp number is not connected to an Open Line yet.' }, 409);
   const ref = readRef(body ?? {});
   const name = ref ? await resolveClientName(portal, ref).catch(() => null) : null;
@@ -288,17 +385,43 @@ apiRoutes.post('/api/crm/open', async (c) => {
   }
 });
 
+const MAX_UPLOAD = 32 * 1024 * 1024;
+
+/** A file attached in the CRM tab (e.g. a quotation PDF). Stored with an unguessable key, sent by key. */
+apiRoutes.post('/api/crm/upload', async (c) => {
+  const form = await c.req.parseBody().catch(() => null);
+  const file = form?.file;
+  if (!file || typeof file === 'string') return c.json({ error: 'BAD_REQUEST', message: 'Choose a file to attach.' }, 400);
+  if (file.size > MAX_UPLOAD) return c.json({ error: 'TOO_LARGE', message: 'Files can be up to 32 MB.' }, 413);
+  const stored = await saveMedia(Buffer.from(await file.arrayBuffer()), (file.name || 'file').slice(0, 120), file.type || 'application/octet-stream');
+  return c.json({ fileKey: stored.key, name: stored.name, size: file.size }, 201);
+});
+
 apiRoutes.post('/api/crm/send', async (c) => {
   const portal = c.get('portal');
   const body = await c.req
-    .json<{ numberId?: string; phone?: string; text?: string; entityTypeId?: number; entityId?: number }>()
+    .json<{ numberId?: string; phone?: string; text?: string; fileKey?: string; entityTypeId?: number; entityId?: number }>()
     .catch(() => null);
   const phone = normalizePhone(body?.phone ?? '');
   const text = (body?.text ?? '').trim();
+  const fileKey = typeof body?.fileKey === 'string' && /^[A-Za-z0-9_-]{43}$/.test(body.fileKey) ? body.fileKey : null;
   const n = body?.numberId ? await getPortalNumber(portal.id, body.numberId) : null;
-  if (!n || !phone || !text) return c.json({ error: 'BAD_REQUEST', message: 'Number, phone and text are required' }, 400);
+  if (!n || !phone || (!text && !fileKey)) return c.json({ error: 'BAD_REQUEST', message: 'Choose a number and write a message or attach a file' }, 400);
+  if (!canSendFrom(c, n)) return c.json({ error: 'FORBIDDEN', message: 'You can only send from company numbers or your own WhatsApp.' }, 403);
   if (text.length > 4096) return c.json({ error: 'BAD_REQUEST', message: 'Message too long (max 4096 characters)' }, 400);
+  const userId = c.get('userId');
+  const byName = userId ? await getUserName(portal.id, userId).catch(() => null) : null;
   const extRef = `tab:${randomUUID()}`;
-  await crmQueue().add('tab', { portalId: portal.id, source: 'tab', numberId: n.id, phone, text, ref: readRef(body ?? {}), extRef });
+  await crmQueue().add('tab', {
+    portalId: portal.id,
+    source: 'tab',
+    numberId: n.id,
+    phone,
+    text,
+    mediaKey: fileKey,
+    byName,
+    ref: readRef(body ?? {}),
+    extRef,
+  });
   return c.json({ queued: true }, 202);
 });

@@ -85,11 +85,20 @@ CREATE INDEX IF NOT EXISTS idx_msg_wa_any ON message_log(number_id, wa_message_i
 ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS status_changed_at BIGINT;
 ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS alerted_status TEXT;
 
--- Bitrix24 administrators seen opening the app. Who may manage numbers is checked on every app
--- open; this list only decides who receives disconnect alerts.
-CREATE TABLE IF NOT EXISTS portal_admins (
+-- Employees seen opening the app (name for the team view; is_admin decides who gets alerts).
+CREATE TABLE IF NOT EXISTS portal_users (
   portal_id     UUID NOT NULL REFERENCES portals(id) ON DELETE CASCADE,
   user_id       INTEGER NOT NULL,
+  name          TEXT,
+  is_admin      BOOLEAN NOT NULL DEFAULT FALSE,
   last_seen_at  BIGINT NOT NULL,
   PRIMARY KEY (portal_id, user_id)
 );
+DROP TABLE IF EXISTS portal_admins;  -- superseded by portal_users
+
+-- Sales team mode: a number can belong to one employee (their own WhatsApp). NULL = company number.
+ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS owner_user_id INTEGER;
+ALTER TABLE wa_numbers ADD COLUMN IF NOT EXISTS personal_line BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_numbers_owner ON wa_numbers(portal_id, owner_user_id) WHERE owner_user_id IS NOT NULL;
+-- Employees may link their own WhatsApp themselves (admins can switch it off).
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS self_link_enabled BOOLEAN NOT NULL DEFAULT TRUE;

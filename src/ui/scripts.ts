@@ -31,6 +31,8 @@ var ICONS = {
   phone: S('<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>'),
   qr: S('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v.01M14 21h7v-4"/>'),
   external: S('<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'),
+  clip: S('<path d="m21.4 11-8.5 8.5a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>'),
+  user: S('<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>'),
   route: S('<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>')
 };
 function icon(name, cls) { var s = document.createElement('span'); s.className = 'ico' + (cls ? ' ' + cls : ''); s.setAttribute('aria-hidden', 'true'); s.innerHTML = ICONS[name] || ''; return s; }
@@ -195,7 +197,7 @@ function switchCtl(o) {
 
 export const ADMIN_JS = String.raw`
 var ADMIN = !!BOOT.isAdmin;
-var state = { numbers: [], lines: [], defaultNumberId: null, missingScopes: [], loaded: false, error: null };
+var state = { numbers: [], lines: [], defaultNumberId: null, missingScopes: [], userId: null, selfLinkEnabled: true, loaded: false, error: null };
 var SCOPE_NAMES = { im: 'Chat and notifications (im)', imconnector: 'External messenger connectors (imconnector)', imopenlines: 'Open Channels (imopenlines)',
   crm: 'CRM (crm)', placement: 'Application embedding (placement)', bizproc: 'Business Processes (bizproc)', messageservice: 'Messaging service (messageservice)' };
 
@@ -204,6 +206,7 @@ function load() {
     .then(function (r) {
       state.numbers = r[0].numbers; state.defaultNumberId = r[0].defaultNumberId; state.lines = r[1].lines || [];
       state.missingScopes = r[0].missingScopes || [];
+      state.userId = r[0].userId || null; state.selfLinkEnabled = r[0].selfLinkEnabled !== false;
       state.loaded = true; state.error = null; render();
     })
     .catch(function (e) { state.error = e.message; state.loaded = true; render(); });
@@ -220,6 +223,21 @@ function userIsBusy() {
 function lineName(id) { var l = state.lines.filter(function (x) { return x.id === id; })[0]; return l ? l.name : 'Open Line #' + id; }
 function lineOwner(lineId, exceptId) { return state.numbers.filter(function (n) { return n.line_id === lineId && n.id !== exceptId; })[0] || null; }
 function live(n) { return n.live_status || n.status; }
+/* Sales team mode: a number may belong to one employee (their own WhatsApp). */
+function mine(n) { return n.owner_user_id != null && n.owner_user_id === state.userId; }
+function canManage(n) { return ADMIN || mine(n); }
+function myNumber() { return state.numbers.filter(mine)[0] || null; }
+function ownerLabel(n) { return mine(n) ? 'You' : (n.owner_name || 'Team member'); }
+function personalLine(n) { return api('POST', '/api/numbers/' + n.id + '/personal-line'); }
+function setupPersonalLine(n) {
+  return act(personalLine(n).then(function (r) { if (r.line && r.line.name) state.lines.push(r.line); }),
+    'Done. Customer replies to ' + (mine(n) ? 'your WhatsApp' : n.label) + ' now arrive in a personal Open Line.');
+}
+function startPersonal() {
+  api('POST', '/api/numbers', { personal: true })
+    .then(function (r) { load(); scanStep(r.number, { total: 0, at: 0 }); })
+    .catch(function (e) { toast(e.message, 'bad'); });
+}
 
 /* ---------- actions ---------- */
 function reconnect(n) {
@@ -272,18 +290,21 @@ function startAdd() {
     var label = input.value.trim();
     if (!label) { err.textContent = 'Give the number a name so your team can recognise it.'; input.focus(); return; }
     busy(next, true);
-    api('POST', '/api/numbers', { label: label })
-      .then(function (r) { load(); scanStep(r.number, { total: 3, at: 2 }); })
+    api('POST', '/api/numbers', { label: label, personal: own.checked })
+      .then(function (r) { load(); scanStep(r.number, own.checked ? { total: 2, at: 2 } : { total: 3, at: 2 }); })
       .catch(function (e) { busy(next, false); err.textContent = e.message; });
   }
   input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+  var own = h('input', { type: 'checkbox' });
+  var ownRow = h('label', { 'class': 'switch', style: 'margin-top:16px' }, [own, h('span', { 'class': 'track' }),
+    h('span', { 'class': 't' }, [h('b', { text: 'This is my own WhatsApp' }), h('span', { text: 'Only you can use it in CRM, and replies come to a personal Open Line.' })])]);
   var chips = h('div', { 'class': 'chips' }, ['Sales', 'Support', 'Marketing', 'Main office'].map(function (c) {
     return h('button', { type: 'button', text: c, onclick: function () { input.value = c; input.focus(); err.textContent = ''; } });
   }));
   openModal([
     stepper(3, 1),
     dlgHead('Name this number', 'Your team sees this name in Bitrix24. Customers never do.', 'Step 1 of 3'),
-    h('div', { 'class': 'dlg-b' }, [h('div', { 'class': 'field' }, [input, err]), chips]),
+    h('div', { 'class': 'dlg-b' }, [h('div', { 'class': 'field' }, [input, err]), chips, ownRow]),
     h('div', { 'class': 'dlg-f' }, [h('button', { 'class': 'btn ghost', text: 'Cancel', onclick: closeModal }), next])
   ]);
 }
@@ -335,8 +356,17 @@ function scanStep(n, ctx) {
     load().then(function () {
       var fresh = state.numbers.filter(function (x) { return x.id === n.id; })[0] || n;
       setTimeout(function () {
-        if (!fresh.line_id) routeStep(fresh, { total: ctx.total, at: ctx.total || 0, fromWizard: true });
-        else { closeModal(); toast(fresh.label + ' is connected. Chats arrive in "' + lineName(fresh.line_id) + '".'); }
+        if (fresh.owner_user_id && !fresh.line_id) {
+          setStatus('warn', 'Creating your personal Open Line…');
+          personalLine(fresh).then(function () {
+            closeModal(); load();
+            toast('All set! Customer replies to ' + (mine(fresh) ? 'your WhatsApp' : fresh.label) + ' now arrive in a personal Open Line.');
+          }).catch(function (e) {
+            if (ADMIN) return routeStep(fresh, { total: ctx.total, at: ctx.total || 0, fromWizard: true });
+            closeModal(); load(); toast(e.message, 'bad');
+          });
+        } else if (!fresh.line_id && ADMIN) routeStep(fresh, { total: ctx.total, at: ctx.total || 0, fromWizard: true });
+        else { closeModal(); toast(fresh.label + ' is connected.' + (fresh.line_id ? ' Chats arrive in "' + lineName(fresh.line_id) + '".' : '')); }
       }, 1100);
     });
   }
@@ -371,7 +401,7 @@ function scanStep(n, ctx) {
   }
   openModal([
     stepper(ctx.total, ctx.at),
-    dlgHead('Link "' + n.label + '" to WhatsApp', null, ctx.total ? 'Step ' + ctx.at + ' of ' + ctx.total : 'Link device'),
+    dlgHead(mine(n) || !ADMIN ? 'Link your WhatsApp' : 'Link "' + n.label + '" to WhatsApp', null, ctx.total ? 'Step ' + ctx.at + ' of ' + ctx.total : 'Link device'),
     h('div', { 'class': 'dlg-b' }, [h('div', { 'class': 'tabs', role: 'tablist' }, [tQr, tPh]), qrPane, phonePane]),
     h('div', { 'class': 'dlg-f' }, [h('span', { 'class': 'grow muted', style: 'font-size:12px;align-self:center', text: 'Your messages stay end-to-end encrypted.' }),
       h('button', { 'class': 'btn', text: 'Do this later', onclick: closeModal })])
@@ -470,7 +500,7 @@ function guide() {
 
 function problem(n) {
   var el = problemAlert(n);
-  if (el && !ADMIN) Array.prototype.slice.call(el.querySelectorAll('button')).forEach(function (b) { b.parentNode.removeChild(b); });
+  if (el && !canManage(n)) Array.prototype.slice.call(el.querySelectorAll('button')).forEach(function (b) { b.parentNode.removeChild(b); });
   return el;
 }
 function problemAlert(n) {
@@ -485,8 +515,10 @@ function problemAlert(n) {
     h('button', { 'class': 'btn primary sm', text: 'Scan QR code', onclick: function () { scanStep(n); } })]);
   if (s === 'disconnected' || s === 'offline') return h('div', { 'class': 'alert bad' }, [icon('alert'), h('div', { 'class': 'grow' }, [h('b', { text: 'Disconnected' }), 'Messages are not syncing right now' + detail + '.']),
     h('button', { 'class': 'btn primary sm', onclick: function () { reconnect(n); } }, [icon('refresh', 'sm'), 'Reconnect'])]);
+  if (s === 'connected' && !n.line_id && n.owner_user_id) return h('div', { 'class': 'alert warn' }, [icon('route'), h('div', { 'class': 'grow' }, [h('b', { text: 'Replies have nowhere to go yet' }), 'Create a personal Open Line so customer replies reach ' + (mine(n) ? 'you' : ownerLabel(n)) + ' in Bitrix24.']),
+    h('button', { 'class': 'btn primary sm', text: 'Create personal Open Line', onclick: function () { setupPersonalLine(n); } })]);
   if (s === 'connected' && !n.line_id) return h('div', { 'class': 'alert warn' }, [icon('route'), h('div', { 'class': 'grow' }, [h('b', { text: 'Choose where chats go' }), 'Incoming messages wait (up to 24 h) until this number is connected to an Open Line.']),
-    h('button', { 'class': 'btn primary sm', text: 'Choose Open Line', onclick: function () { routeStep(n); } })]);
+    ADMIN ? h('button', { 'class': 'btn primary sm', text: 'Choose Open Line', onclick: function () { routeStep(n); } }) : null]);
   return null;
 }
 
@@ -526,27 +558,28 @@ function numberCard(n) {
   var items = [
     { icon: 'pencil', label: 'Rename', run: function () { rename(n, nameEl); } },
     s !== 'connected' ? { icon: n.phone && s !== 'logged_out' ? 'refresh' : 'qr', label: n.phone && s !== 'logged_out' ? 'Reconnect' : 'Scan QR code', run: function () { reconnect(n); } } : null,
-    n.phone ? { icon: 'route', label: 'Change Open Line', run: function () { routeStep(n); } } : null,
+    n.phone && ADMIN ? { icon: 'route', label: 'Change Open Line', run: function () { routeStep(n); } } : null,
     s === 'connected' || s === 'connecting' ? { icon: 'pause', label: 'Pause syncing', run: function () { pause(n); } } : null,
     n.phone ? { icon: 'logout', label: 'Log out device', run: function () { logout(n); } } : null,
     '-',
-    { icon: 'trash', label: 'Delete number', danger: true, run: function () { remove(n); } }
+    { icon: 'trash', label: mine(n) ? 'Remove my WhatsApp' : 'Delete number', danger: true, run: function () { remove(n); } }
   ];
   return h('div', { 'class': 'card num' }, [
     h('div', { 'class': 'num-h' }, [
       h('div', { 'class': 'avatar ' + (x.t === 'ok' ? '' : x.t) }, [icon('wa'), h('span', { 'class': 'dot ' + x.t })]),
       h('div', { 'class': 'who' }, [
         h('div', { 'class': 'name-row' }, [nameEl,
-          !ADMIN ? null : h('button', { 'class': 'btn ghost icon rename', 'aria-label': 'Rename', title: 'Rename', style: 'width:28px;height:28px', onclick: function () { rename(n, nameEl); } }, [icon('pencil', 'sm')]),
+          !canManage(n) ? null : h('button', { 'class': 'btn ghost icon rename', 'aria-label': 'Rename', title: 'Rename', style: 'width:28px;height:28px', onclick: function () { rename(n, nameEl); } }, [icon('pencil', 'sm')]),
+          n.owner_user_id ? h('span', { 'class': 'chip info', title: 'Personal number of ' + ownerLabel(n) }, [icon('user'), ownerLabel(n)]) : null,
           isDefault ? h('span', { 'class': 'chip star', title: 'Used by CRM, robots and SMS when no number is chosen' }, [icon('star'), 'Default']) : null]),
         h('div', { 'class': 'sub-row' }, [h('span', { text: n.phone ? fmtPhone(n.phone) : 'No phone linked' }), h('span', { 'class': 'sep' }), stateTag(s),
           n.line_id ? h('span', { 'class': 'sep' }) : null, n.line_id ? h('span', { text: lineName(n.line_id) }) : null])
       ]),
-      ADMIN ? menu(items) : null
+      canManage(n) ? menu(items) : null
     ]),
     problem(n),
     stats(n),
-    !n.phone ? null : h('div', { 'class': 'settings' }, [
+    !n.phone || !ADMIN ? null : h('div', { 'class': 'settings' }, [
       lineField(n),
       h('div', { 'class': 'toggles' }, [
         switchCtl({ title: 'Forward group chats', text: 'WhatsApp groups also appear in Contact Center.', checked: n.groups_enabled, disabled: !ADMIN,
@@ -583,13 +616,52 @@ function emptyState() {
   ]);
 }
 
+function teamCard(count) {
+  return h('div', { 'class': 'card pad', style: 'margin-bottom:14px' }, [
+    switchCtl({ title: 'Let employees link their own WhatsApp', checked: state.selfLinkEnabled,
+      text: 'Each salesperson opens this app and scans their own phone. They message clients from CRM with their own number, and replies go to a personal Open Line only they answer.',
+      onchange: function (v) { act(api('PUT', '/api/settings', { selfLinkEnabled: v }), v ? 'Employees can now link their own WhatsApp.' : 'Employees can no longer link new numbers.'); } }),
+    count ? null : h('div', { 'class': 'hint-row' }, [icon('info', 'sm'), h('span', { text: state.selfLinkEnabled
+      ? 'No one has linked their own WhatsApp yet. Ask your team to open WhatsApp from the left menu and click "Link my WhatsApp".'
+      : 'Switch this on to let your sales team link their own numbers.' })])
+  ]);
+}
+
+function renderMine() {
+  var my = myNumber();
+  if (my) {
+    app.appendChild(h('div', { 'class': 'section-h', text: 'My WhatsApp' }));
+    app.appendChild(numberCard(my));
+    app.appendChild(h('div', { 'class': 'hint-row' }, [icon('info', 'sm'), h('span', { text: 'Message clients from the WhatsApp tab in any Lead, Deal, Contact or Company. Their replies arrive in Contact Center' + (my.line_id ? ' (' + lineName(my.line_id) + ').' : '.') })]));
+  } else if (state.selfLinkEnabled) {
+    app.appendChild(h('div', { 'class': 'card empty' }, [
+      h('div', { 'class': 'art' }, [icon('wa')]),
+      h('h2', { text: 'Link your WhatsApp' }),
+      h('p', { text: 'Scan a QR code with your phone, just like WhatsApp Web. Then message your clients from any CRM record with your own number. Their replies come straight to you in Bitrix24.' }),
+      h('button', { 'class': 'btn primary lg', onclick: startPersonal }, [icon('qr'), 'Link my WhatsApp']),
+      h('div', { 'class': 'ticks' }, [
+        h('span', {}, [icon('check', 'sm'), 'Takes about a minute']),
+        h('span', {}, [icon('check', 'sm'), 'Your own number']),
+        h('span', {}, [icon('check', 'sm'), 'Chats stay linked to your CRM records'])
+      ])
+    ]));
+  } else {
+    app.appendChild(h('div', { 'class': 'card empty small' }, [h('div', { 'class': 'art' }, [icon('wa')]),
+      h('h2', { text: 'Linking your own WhatsApp is switched off' }),
+      h('p', { text: 'Ask a Bitrix24 administrator to switch on "Let employees link their own WhatsApp" in this app. You can still message clients from company numbers in the WhatsApp tab of any CRM record.' })]));
+  }
+  app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
+  app.appendChild(features());
+  app.appendChild(footer());
+  fit();
+}
+
 function render() {
   clear(app);
   app.appendChild(header());
   if (state.error) app.appendChild(h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'), h('div', { 'class': 'grow' }, [h('b', { text: 'Something went wrong' }), state.error]),
     h('button', { 'class': 'btn sm', text: 'Try again', onclick: load })]));
-  if (!ADMIN) app.appendChild(h('div', { 'class': 'alert info', style: 'margin:0 0 14px' }, [icon('info'),
-    h('div', { 'class': 'grow' }, [h('b', { text: 'View only' }), 'Only Bitrix24 administrators can link numbers or change these settings. You can still message clients from the WhatsApp tab in any CRM record.'])]));
+  if (!ADMIN) return renderMine();
   if (ADMIN && state.missingScopes.length) app.appendChild(h('div', { 'class': 'alert bad', style: 'margin:0 0 14px' }, [icon('alert'),
     h('div', { 'class': 'grow' }, [h('b', { text: 'Bitrix24 permission missing: ' + state.missingScopes.map(function (x) { return SCOPE_NAMES[x] || x; }).join(', ') }),
       'Some features fail without it (for example: messages typed on the phone, copies of CRM sends in the chat, disconnect alerts). Fix: Developer resources → Integrations → this app → Edit → Assign permissions → add it → Save → Reinstall.'])]));
@@ -601,8 +673,15 @@ function render() {
     return fit();
   }
   var g = guide(); if (g) app.appendChild(g);
-  app.appendChild(h('div', { 'class': 'section-h' }, ['Numbers', h('span', { 'class': 'count', text: String(state.numbers.length) })]));
-  state.numbers.forEach(function (n) { app.appendChild(numberCard(n)); });
+  var company = state.numbers.filter(function (n) { return !n.owner_user_id; });
+  var team = state.numbers.filter(function (n) { return n.owner_user_id; });
+  if (company.length) {
+    app.appendChild(h('div', { 'class': 'section-h' }, ['Company numbers', h('span', { 'class': 'count', text: String(company.length) })]));
+    company.forEach(function (n) { app.appendChild(numberCard(n)); });
+  }
+  app.appendChild(h('div', { 'class': 'section-h' }, ['Sales team', h('span', { 'class': 'count', text: String(team.length) })]));
+  app.appendChild(teamCard(team.length));
+  team.forEach(function (n) { app.appendChild(numberCard(n)); });
   app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
   app.appendChild(features());
   app.appendChild(footer());
@@ -676,7 +755,14 @@ bxReady(function () {
 
 export const CRM_JS = String.raw`
 var ref = BOOT.placement;
-var ctx = null, phoneIdx = 0, fromId = null, draft = '';
+var ctx = null, phoneIdx = 0, fromId = null, draft = '', attached = null;
+function fmtSize(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
+function upload(file) {
+  var fd = new FormData(); fd.append('file', file);
+  return fetch('/api/crm/upload', { method: 'POST', headers: { 'X-App-Session': BOOT.session }, body: fd }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.message || 'Upload failed (' + r.status + ')'); return j; });
+  });
+}
 var MAX = 4096;
 function openChat(chatId) { try { BX24.im.openMessenger('chat' + chatId); } catch (e) { toast('Open the chat from Contact Center (chat #' + chatId + ').', 'bad'); } }
 function head(right) {
@@ -700,14 +786,15 @@ function render() {
     return fit();
   }
   if (!fromId || !ctx.numbers.some(function (n) { return n.id === fromId; })) {
-    var def = ctx.numbers.filter(function (n) { return n.id === ctx.defaultNumberId && n.status === 'connected'; })[0]
+    var def = ctx.numbers.filter(function (n) { return n.id === ctx.myNumberId; })[0]
+      || ctx.numbers.filter(function (n) { return n.id === ctx.defaultNumberId && n.status === 'connected'; })[0]
       || ctx.numbers.filter(function (n) { return n.status === 'connected'; })[0] || ctx.numbers[0];
     fromId = def.id;
   }
   if (phoneIdx >= ctx.phones.length) phoneIdx = 0;
   var from = h('select', { 'aria-label': 'Send from', onchange: function () { fromId = from.value; draft = text.value; render(); } });
   ctx.numbers.forEach(function (n) {
-    var o = h('option', { value: n.id, text: n.label + (n.phone ? '  ' + fmtPhone(n.phone) : '') + (n.status !== 'connected' ? '  (offline)' : '') });
+    var o = h('option', { value: n.id, text: (n.id === ctx.myNumberId ? 'My WhatsApp' : n.label) + (n.phone ? '  ' + fmtPhone(n.phone) : '') + (n.status !== 'connected' ? '  (offline)' : '') });
     if (n.id === fromId) o.selected = true; from.appendChild(o);
   });
   var num = ctx.numbers.filter(function (n) { return n.id === fromId; })[0];
@@ -727,14 +814,31 @@ function render() {
   var text = h('textarea', { placeholder: 'Write a WhatsApp message to ' + fmtPhone(p.phone) + '…', maxlength: String(MAX), 'aria-label': 'Message' });
   text.value = draft;
   var counter = h('span', { 'class': 'counter' });
-  function count() { var n = text.value.length; counter.textContent = n ? n + ' / ' + MAX : ''; counter.className = 'counter' + (n > MAX - 100 ? ' bad' : ''); send.disabled = !text.value.trim(); }
+  function count() { var n = text.value.length; counter.textContent = n ? n + ' / ' + MAX : ''; counter.className = 'counter' + (n > MAX - 100 ? ' bad' : ''); send.disabled = !text.value.trim() && !attached; }
+  var fileInput = h('input', { type: 'file', style: 'display:none', onchange: function () {
+    var f = fileInput.files && fileInput.files[0]; fileInput.value = '';
+    if (!f) return;
+    if (f.size > 32 * 1048576) return toast('Files can be up to 32 MB.', 'bad');
+    busy(attachBtn, true);
+    upload(f).then(function (r) { attached = { fileKey: r.fileKey, name: r.name, size: r.size }; showFile(); count(); })
+      .catch(function (e) { toast(e.message, 'bad'); }).then(function () { busy(attachBtn, false); });
+  } });
+  var attachBtn = h('button', { 'class': 'btn', title: 'Attach a file, e.g. a quotation PDF', onclick: function () { fileInput.click(); } }, [icon('clip', 'sm'), 'Attach']);
+  var fileRow = h('div', { 'class': 'phones', style: 'margin:8px 0 0' });
+  function showFile() {
+    clear(fileRow);
+    if (!attached) return fit();
+    fileRow.appendChild(h('button', { 'class': 'on', title: 'Remove attachment', onclick: function () { attached = null; showFile(); count(); } },
+      [icon('clip', 'sm'), attached.name, h('span', { text: fmtSize(attached.size) + '  ✕' })]));
+    fit();
+  }
   function grow() { text.style.height = 'auto'; text.style.height = Math.min(320, Math.max(110, text.scrollHeight)) + 'px'; fit(); }
   var send = h('button', { 'class': 'btn primary', onclick: doSend }, [icon('send', 'sm'), 'Send']);
   function doSend() {
-    var body = text.value.trim(); if (!body) return text.focus();
+    var body = text.value.trim(); if (!body && !attached) return text.focus();
     busy(send, true);
-    api('POST', '/api/crm/send', { numberId: fromId, phone: p.phone, text: body, entityTypeId: ref.entityTypeId, entityId: ref.entityId })
-      .then(function () { text.value = ''; draft = ''; count(); grow(); toast('Message queued. It will appear in the chat and the timeline.'); })
+    api('POST', '/api/crm/send', { numberId: fromId, phone: p.phone, text: body, fileKey: attached ? attached.fileKey : null, entityTypeId: ref.entityTypeId, entityId: ref.entityId })
+      .then(function () { text.value = ''; draft = ''; attached = null; showFile(); count(); grow(); toast('Queued for WhatsApp. Once sent it is recorded in the timeline and the chat.'); })
       .catch(function (e) { toast(e.message, 'bad'); })
       .then(function () { busy(send, false); count(); text.focus(); });
   }
@@ -748,11 +852,12 @@ function render() {
       .catch(function (e) { toast(e.message, 'bad'); }).then(function () { busy(openBtn, false); });
   } }, [icon('chat', 'sm'), chat ? 'Open chat' : 'Start chat']);
 
-  app.appendChild(h('div', { 'class': 'card composer' }, [text,
+  app.appendChild(h('div', { 'class': 'card composer' }, [text, fileRow, fileInput,
     h('div', { 'class': 'composer-f' }, [
       h('span', { 'class': 'grow' }, [h('span', { text: '*bold*  _italic_  ~strike~' }), '  ·  ', h('kbd', { text: 'Ctrl' }), ' + ', h('kbd', { text: 'Enter' }), ' to send  ', counter]),
-      openBtn, send
+      attachBtn, openBtn, send
     ])]));
+  showFile();
   app.appendChild(h('div', { 'class': 'hint-row' }, chat
     ? [icon('check', 'sm'), h('span', { text: 'A conversation with ' + fmtPhone(p.phone) + ' already exists in Contact Center. Replies arrive there.' })]
     : [icon('info', 'sm'), h('span', { text: 'Replies from the client arrive in Contact Center and are linked to this record.' })]));

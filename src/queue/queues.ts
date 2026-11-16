@@ -26,6 +26,10 @@ export interface CrmSendJob {
   phone: string;
   text: string;
   fileUrl?: string | null;
+  /** file attached in the CRM tab, in the media store */
+  mediaKey?: string | null;
+  /** employee who sent it from the CRM tab (for the timeline) */
+  byName?: string | null;
   ref?: CrmRef | null;
   /** idempotency key: SMS message id or robot event token */
   extRef: string;

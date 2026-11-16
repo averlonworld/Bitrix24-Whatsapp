@@ -1,5 +1,5 @@
 import { call } from '../bitrix/client.js';
-import { listAdmins } from '../db/admins.js';
+import { listAdmins } from '../db/users.js';
 import { listActiveNumbers, setAlertedStatus } from '../db/numbers.js';
 import { getPortalById } from '../db/portals.js';
 import { nowSec } from '../db/pool.js';
@@ -51,7 +51,8 @@ export function alertMessage(n: WaNumber, action: 'down' | 'recovered'): string 
 async function notify(n: WaNumber, action: 'down' | 'recovered') {
   const portal = await getPortalById(n.portal_id);
   if (!portal || portal.status !== 'active') return;
-  const admins = await listAdmins(portal.id);
+  // Administrators, plus the employee whose own WhatsApp it is.
+  const admins = [...new Set([...(await listAdmins(portal.id)), ...(n.owner_user_id ? [n.owner_user_id] : [])])];
   if (!admins.length) {
     logger.warn({ numberId: n.id, action }, 'no administrator known yet to alert - an admin must open the app once');
     return;
