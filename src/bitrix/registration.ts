@@ -44,6 +44,7 @@ export const EVENTS: Array<{ event: string; path: string }> = [
 ];
 
 export const ROBOT_CODE = 'wa_qr_send_message';
+export const ACTIVITY_CODE = 'wa_qr_send_message_bp';
 export const SMS_PROVIDER_CODE = 'wa_qr';
 
 const robotProperties = {
@@ -127,9 +128,11 @@ export async function registerAutomation(portal: Portal): Promise<void> {
     PROPERTIES: robotProperties,
   };
   // Robot: Lead/Deal/SPA automation rules. Activity: Business Process designer.
+  // Robots and activities share one code namespace in Bitrix24, so the activity needs its own code;
+  // with the robot's code it is rejected as "already installed" and never appears in the designer.
   await soft(portal, 'bizproc.robot.add', () => registerOrUpdate(portal, 'bizproc.robot', common));
   await soft(portal, 'bizproc.activity.add', () =>
-    registerOrUpdate(portal, 'bizproc.activity', { ...common, DOCUMENT_TYPE: undefined }),
+    registerOrUpdate(portal, 'bizproc.activity', { ...common, CODE: ACTIVITY_CODE, DOCUMENT_TYPE: undefined }),
   );
 }
 
@@ -137,7 +140,9 @@ async function registerOrUpdate(portal: Portal, family: 'bizproc.robot' | 'bizpr
   try {
     await call(portal, `${family}.add`, fields);
   } catch (err) {
-    if (err instanceof BitrixError && /exist|duplicate/i.test(`${err.code} ${err.description}`)) {
+    // Bitrix answers ERROR_ACTIVITY_ALREADY_INSTALLED ("Activity or Robot already installed!"). Update
+    // it then, so a changed public address reaches the handler instead of keeping the old one.
+    if (err instanceof BitrixError && /exist|duplicate|already/i.test(`${err.code} ${err.description}`)) {
       const { CODE, ...rest } = fields;
       await call(portal, `${family}.update`, { CODE, FIELDS: rest });
       return;

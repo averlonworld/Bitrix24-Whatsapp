@@ -2,6 +2,7 @@ export interface Portal {
   id: string;
   member_id: string;
   domain: string;
+  client_id: string | null;
   client_endpoint: string;
   access_token: string;
   refresh_token: string;
@@ -10,6 +11,14 @@ export interface Portal {
   connector_version: number | null;
   default_number_id: string | null;
   status: string;
+  self_link_enabled: boolean;
+  trial_ends_at: number | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  sub_status: string | null;
+  sub_quantity: number | null;
+  sub_period_end: number | null;
+  auto_replies: Record<string, unknown> | null;
   installed_at: number;
   updated_at: number;
 }
@@ -27,6 +36,10 @@ export interface WaNumber {
   groups_enabled: boolean;
   created_at: number;
   updated_at: number;
+  status_changed_at: number | null;
+  alerted_status: string | null;
+  owner_user_id: number | null;
+  personal_line: boolean;
 }
 
 export interface ChatMapRow {

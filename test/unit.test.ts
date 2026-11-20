@@ -1,5 +1,8 @@
 import { proto } from 'baileys';
 import { describe, expect, it } from 'vitest';
+import { portalDomain } from '../src/bitrix/auth.js';
+import { diffScopes } from '../src/bitrix/scopes.js';
+import { alertDecision } from '../src/sync/alerts.js';
 import { parseCrmPlacement, parseDocumentId, timelineEntityType } from '../src/bitrix/crm.js';
 import { mediaKindFor } from '../src/bitrix/files.js';
 import { config } from '../src/config.js';
@@ -173,6 +176,10 @@ describe('number selection for CRM sends', () => {
     groups_enabled: false,
     created_at: 0,
     updated_at: 0,
+    status_changed_at: null,
+    alerted_status: null,
+    owner_user_id: null,
+    personal_line: false,
   });
   const nums = [n('a', 'Sales', '971500000001', 'disconnected'), n('b', 'Support', '971500000002')];
   it('honours explicit id, label, phone, default, then first connected', () => {
@@ -204,5 +211,40 @@ describe('KeyedMutex', () => {
     ]);
     expect(log.indexOf('a1')).toBeLessThan(log.indexOf('a2'));
     expect(log.indexOf('b1')).toBeLessThan(log.indexOf('a1'));
+  });
+});
+
+describe('portal domain', () => {
+  it('takes the portal host from the REST endpoint, not the OAuth server', () => {
+    expect(portalDomain('https://world.bitrix24.eu/rest/', 'oauth.bitrix.info')).toBe('world.bitrix24.eu');
+    expect(portalDomain('not a url', 'oauth.bitrix.info')).toBe('oauth.bitrix.info');
+  });
+});
+
+describe('disconnect alerts', () => {
+  const base = { phone: '918355892950', last_error: null, alerted_status: null, status_changed_at: 1000 } as const;
+  it('alerts once after the grace period for real problems only', () => {
+    expect(alertDecision({ ...base, status: 'logged_out', last_error: 'Logged out from the phone.' }, 1030)).toBe(null);
+    expect(alertDecision({ ...base, status: 'logged_out', last_error: 'Logged out from the phone.' }, 1061)).toBe('down');
+    expect(alertDecision({ ...base, status: 'logged_out', last_error: 'x', alerted_status: 'logged_out' }, 5000)).toBe(null);
+    expect(alertDecision({ ...base, status: 'connecting' }, 1500)).toBe(null);
+    expect(alertDecision({ ...base, status: 'connecting' }, 1601)).toBe('down');
+  });
+  it('stays quiet for admin actions and unlinked numbers', () => {
+    expect(alertDecision({ ...base, status: 'disconnected' }, 9999)).toBe(null); // paused from the app
+    expect(alertDecision({ ...base, status: 'logged_out' }, 9999)).toBe(null); // logged out from the app
+    expect(alertDecision({ ...base, phone: null, status: 'connecting' }, 9999)).toBe(null);
+  });
+  it('reports recovery, or clears silently when an admin resolved it', () => {
+    expect(alertDecision({ ...base, status: 'connected', alerted_status: 'connecting' }, 9999)).toBe('recovered');
+    expect(alertDecision({ ...base, status: 'disconnected', alerted_status: 'logged_out' }, 9999)).toBe('clear');
+    expect(alertDecision({ ...base, status: 'connected' }, 9999)).toBe(null);
+  });
+});
+
+describe('required Bitrix24 permissions', () => {
+  it('lists what the portal did not grant', () => {
+    expect(diffScopes(['crm', 'imopenlines', 'imconnector', 'placement', 'bizproc', 'messageservice', 'im.import'])).toEqual(['im']);
+    expect(diffScopes(['crm', 'imopenlines', 'imconnector', 'placement', 'bizproc', 'messageservice', 'im'])).toEqual([]);
   });
 });

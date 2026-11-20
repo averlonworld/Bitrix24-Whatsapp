@@ -26,6 +26,10 @@ export interface CrmSendJob {
   phone: string;
   text: string;
   fileUrl?: string | null;
+  /** file attached in the CRM tab, in the media store */
+  mediaKey?: string | null;
+  /** employee who sent it from the CRM tab (for the timeline) */
+  byName?: string | null;
   ref?: CrmRef | null;
   /** idempotency key: SMS message id or robot event token */
   extRef: string;
@@ -39,8 +43,9 @@ const connection = () => ({ url: config().redisUrl, maxRetriesPerRequest: null }
 const defaultJobOptions = {
   attempts: 6,
   backoff: { type: 'exponential' as const, delay: 3000 },
-  removeOnComplete: { count: 2000 },
-  removeOnFail: { count: 5000 },
+  // Jobs carry message text: keep it only as long as needed (see the privacy policy).
+  removeOnComplete: { age: 3600, count: 2000 },
+  removeOnFail: { age: 7 * 86_400, count: 5000 },
 };
 
 let inboundQ: Queue<InboundJob> | null = null;

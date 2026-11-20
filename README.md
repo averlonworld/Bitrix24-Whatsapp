@@ -118,9 +118,14 @@ detects that and tells you to update the two paths). For real use, deploy to a s
 - **Updates:** `git pull && docker compose up -d --build`. Numbers reconnect by themselves.
 - **Re-registration:** bump `CONNECTOR_VERSION` in `.env` to re-register the connector,
   placements, robot and SMS provider on every portal at its next app open.
-- **Backups:** back up the `pgdata` volume. It holds the WhatsApp logins (encrypted with
-  `TOKEN_ENC_KEY` - back that key up separately; without it the logins cannot be decrypted).
-- **Logs:** `docker compose logs -f app` (JSON; tokens and message text are never logged).
+- **Backups:** the `backup` service dumps the database to `backups/` daily (kept 14 days);
+  restore with `bash scripts/restore.sh <file>`. Back up `.env` separately: `TOKEN_ENC_KEY`
+  decrypts the WhatsApp logins.
+- **Moving servers / laptop → server:** `scripts/export.sh` on the old machine, `scripts/import.sh`
+  on the new one. No new QR scan needed.
+- **Logs:** `docker compose logs -f app` (JSON; tokens and message text are never logged). Rotated
+  at 5 × 10 MB per container.
+- Full guide: [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
 ## Things to know
 - **This is an unofficial WhatsApp client.** WhatsApp's terms forbid unofficial clients and can ban

@@ -81,6 +81,7 @@ CONNECTOR_ID=wa_qr_connector
 CONNECTOR_NAME=WhatsApp
 CONNECTOR_VERSION=1
 MEDIA_MAX_AGE_DAYS=7
+BACKUP_KEEP_DAYS=14
 SEND_MIN_INTERVAL_MS=1500
 LOG_LEVEL=info
 ENV
@@ -90,6 +91,8 @@ fi
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null
 fi
+
+mkdir -p backups && chmod 700 backups
 
 say "Building and starting (first run takes a few minutes)"
 docker compose up -d --build
@@ -101,6 +104,8 @@ for _ in $(seq 1 60); do
     echo "Next: in Bitrix24 open the app (left menu or Developer resources -> your app -> open),"
     echo "add a WhatsApp number, scan the QR code, choose an Open Line."
     echo "Logs:    cd $DIR && docker compose logs -f app"
+    echo "Backups: daily in $DIR/backups (kept 14 days). Also copy $DIR/.env somewhere safe."
+    echo "Moving from the laptop test setup? Run scripts/export.sh there, then scripts/import.sh here."
     exit 0
   fi
   sleep 5

@@ -5,7 +5,10 @@ import { bindSmartProcess, ensureRegistered } from '../../bitrix/registration.js
 import { config } from '../../config.js';
 import { bindLine, listNumbers } from '../../db/numbers.js';
 import { getPortalByMemberId, markUninstalled, setApplicationToken } from '../../db/portals.js';
+import { cancelAtPeriodEnd } from '../../billing/stripe.js';
 import { logger } from '../../logger.js';
+import { purgePortal } from '../../sync/retention.js';
+import { audit } from '../../db/audit.js';
 import { outboundQueue } from '../../queue/queues.js';
 import type { OutboundFile } from '../../types.js';
 import { NOTE_PREFIX } from '../../util/format.js';
@@ -75,9 +78,22 @@ eventRoutes.post('/events/uninstall', async (c) => {
   const body = await readPhpForm(c.req.raw);
   const r = await authenticateEvent(authOf(body));
   if (!r.portal) return ignored(c, 'uninstall', r.reason, authOf(body));
-  // Stop the sockets but keep the WhatsApp logins: a reinstall resumes them without a new QR.
-  for (const n of await listNumbers(r.portal.id)) await getEngine().stop(n.id).catch(() => undefined);
-  await markUninstalled(r.portal.id);
+  const portal = r.portal;
+  if (str(obj(body.data).CLEAN) === '1') {
+    // "Clear application data" ticked: unlink the WhatsApp devices and delete everything now.
+    await purgePortal(portal, 'uninstalled with CLEAN=1');
+    return c.text('ok');
+  }
+  // Stop the sockets but keep the WhatsApp logins for a while: a reinstall resumes them without a
+  // new QR. The retention job deletes the portal after UNINSTALLED_KEEP_DAYS.
+  for (const n of await listNumbers(portal.id)) await getEngine().stop(n.id).catch(() => undefined);
+  await markUninstalled(portal.id);
+  await audit({ portalId: portal.id, actor: { type: 'bitrix', name: 'Bitrix24' }, action: 'app.uninstalled' });
+  if (portal.stripe_subscription_id && portal.sub_status && portal.sub_status !== 'canceled') {
+    await cancelAtPeriodEnd(portal.stripe_subscription_id).catch((err) =>
+      logger.warn({ err: (err as Error).message }, 'could not stop billing on uninstall'),
+    );
+  }
   return c.text('ok');
 });
 
