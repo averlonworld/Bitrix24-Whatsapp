@@ -134,3 +134,22 @@ CREATE TABLE IF NOT EXISTS app_lines (
   created_at  BIGINT NOT NULL,
   PRIMARY KEY (portal_id, line_id)
 );
+
+-- Activity log (who changed numbers, settings, billing; WhatsApp / Bitrix24 / Stripe events).
+-- Never message content. Purged after 365 days.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id             BIGSERIAL PRIMARY KEY,
+  portal_id      UUID NOT NULL REFERENCES portals(id) ON DELETE CASCADE,
+  at             BIGINT NOT NULL,
+  actor_type     TEXT NOT NULL,            -- user | system | bitrix | stripe
+  actor_user_id  INTEGER,
+  actor_name     TEXT,
+  action         TEXT NOT NULL,            -- e.g. number.deleted, connection.logged_out
+  target_type    TEXT,
+  target_id      TEXT,
+  target_label   TEXT,
+  details        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ip             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_portal ON audit_log(portal_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);

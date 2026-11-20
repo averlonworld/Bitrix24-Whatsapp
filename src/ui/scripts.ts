@@ -32,6 +32,8 @@ var ICONS = {
   qr: S('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v.01M14 21h7v-4"/>'),
   external: S('<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'),
   bill: S('<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>'),
+  history: S('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>'),
+  download: S('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
   clip: S('<path d="m21.4 11-8.5 8.5a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>'),
   user: S('<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>'),
   route: S('<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>')
@@ -219,7 +221,7 @@ function load() {
     .catch(function (e) { state.error = e.message; state.loaded = true; render(); });
 }
 function act(p, okMsg) {
-  return p.then(function () { return load(); }).then(function () { if (okMsg) toast(okMsg); })
+  return p.then(function () { return load(); }).then(function () { if (okMsg) toast(okMsg); if (ADMIN) loadAudit(true); })
     .catch(function (e) { toast(e.message, 'bad'); return load(); });
 }
 function userIsBusy() {
@@ -287,6 +289,71 @@ function billingCard() {
     h('div', { 'class': 'fi', style: 'width:40px;height:40px;border-radius:10px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center' }, [icon('bill')]),
     h('div', { 'class': 'grow', style: 'min-width:220px' }, [h('b', { text: title }), h('div', { 'class': 'muted', style: 'font-size:13px', text: sub })]),
     h('div', { 'class': 'row' }, actions)
+  ]);
+}
+
+/* ---------- activity log (administrators) ---------- */
+var audit = { category: '', entries: [], next: null, loaded: false, loading: false };
+function loadAudit(reset) {
+  if (!ADMIN || audit.loading) return Promise.resolve();
+  audit.loading = true;
+  var q = '/api/audit?limit=30' + (audit.category ? '&category=' + audit.category : '') + (!reset && audit.next ? '&before=' + audit.next : '');
+  return api('GET', q).then(function (r) {
+    audit.entries = reset ? r.entries : audit.entries.concat(r.entries);
+    audit.next = r.entries.length === 30 ? r.next : null;
+    audit.loaded = true; audit.loading = false;
+    var box = document.getElementById('audit-box'); if (box) fillAudit(box);
+  }).catch(function (e) { audit.loading = false; toast(e.message, 'bad'); });
+}
+var ACTOR_ICON = { user: 'user', system: 'wa', bitrix: 'crm', stripe: 'bill' };
+function auditWho(e) { return e.actorName || (e.actorType === 'user' ? 'User #' + (e.actorUserId || '?') : e.actorType === 'stripe' ? 'Stripe' : e.actorType === 'bitrix' ? 'Bitrix24' : 'System'); }
+function fillAudit(box) {
+  clear(box);
+  if (!audit.loaded) { box.appendChild(h('div', { 'class': 'sk', style: 'height:120px' })); return fit(); }
+  if (!audit.entries.length) { box.appendChild(h('p', { 'class': 'muted', style: 'margin:8px 0', text: 'Nothing recorded yet. Changes to numbers, settings and billing, and WhatsApp connection events, appear here.' })); return fit(); }
+  audit.entries.forEach(function (e) {
+    var when = new Date(e.at * 1000);
+    box.appendChild(h('div', { 'class': 'step', style: 'padding:10px 0;align-items:flex-start' }, [
+      h('div', { 'class': 'mark', style: 'border:0;background:var(--sunken);color:var(--text-2)' }, [icon(ACTOR_ICON[e.actorType] || 'info', 'sm')]),
+      h('div', { 'class': 'txt' }, [
+        h('b', { style: 'font-weight:500;text-decoration:none;color:var(--text)', text: e.text }),
+        h('span', { title: when.toLocaleString() }, [auditWho(e) + ' · ' + relTime(e.at) + ' · ' + when.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + (e.ip ? ' · IP ' + e.ip : '')])
+      ])
+    ]));
+  });
+  if (audit.next) box.appendChild(h('div', { style: 'padding-top:12px' }, [h('button', { 'class': 'btn sm', text: 'Show older', onclick: function (ev) { busy(ev.currentTarget, true); loadAudit(false); } })]));
+  fit();
+}
+function exportAudit(btn) {
+  busy(btn, true);
+  fetch('/api/audit.csv' + (audit.category ? '?category=' + audit.category : ''), { headers: { 'X-App-Session': BOOT.session } })
+    .then(function (r) { if (!r.ok) throw new Error('Export failed (' + r.status + ')'); return r.blob(); })
+    .then(function (b) {
+      var a = document.createElement('a'); a.href = URL.createObjectURL(b);
+      a.download = 'whatsapp-activity-' + new Date().toISOString().slice(0, 10) + '.csv';
+      document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      toast('Exported the latest 500 entries.');
+    }).catch(function (e) { toast(e.message, 'bad'); }).then(function () { busy(btn, false); });
+}
+function activityCard() {
+  var box = h('div', { id: 'audit-box' });
+  var cats = [['', 'All'], ['numbers', 'Numbers'], ['connection', 'Connection'], ['settings', 'Settings'], ['billing', 'Billing']];
+  var tabs = h('div', { 'class': 'tabs', role: 'tablist', style: 'margin:0' }, cats.map(function (c) {
+    return h('button', { 'class': audit.category === c[0] ? 'on' : '', text: c[1], onclick: function () {
+      audit.category = c[0]; audit.loaded = false; audit.next = null;
+      Array.prototype.forEach.call(tabs.children, function (b) { b.className = b.textContent === c[1] ? 'on' : ''; });
+      fillAudit(box); loadAudit(true);
+    } });
+  }));
+  fillAudit(box);
+  if (!audit.loaded) loadAudit(true);
+  return h('div', { 'class': 'card pad' }, [
+    h('div', { 'class': 'row', style: 'justify-content:space-between;margin-bottom:8px' }, [tabs,
+      h('div', { 'class': 'row' }, [
+        h('button', { 'class': 'btn ghost sm', title: 'Refresh', onclick: function () { loadAudit(true); } }, [icon('refresh', 'sm'), 'Refresh']),
+        h('button', { 'class': 'btn sm', onclick: function (ev) { exportAudit(ev.currentTarget); } }, [icon('download', 'sm'), 'Export CSV'])])]),
+    h('p', { 'class': 'help', style: 'margin:0 0 4px', text: 'Who linked, removed or changed numbers and settings, and what WhatsApp, Bitrix24 and Stripe did. Kept for 12 months. Message content is never recorded.' }),
+    box
   ]);
 }
 
@@ -789,6 +856,7 @@ function render() {
     if (state.autoReplies) { app.appendChild(h('div', { 'class': 'section-h', text: 'Automatic replies' })); app.appendChild(autoRepliesCard()); }
     var bc0 = state.billing && state.billing.enabled ? billingCard() : null;
     if (bc0) { app.appendChild(h('div', { 'class': 'section-h', text: 'Billing' })); app.appendChild(bc0); }
+    if (ADMIN) { app.appendChild(h('div', { 'class': 'section-h' }, [icon('history', 'sm'), 'Activity log'])); app.appendChild(activityCard()); }
     app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
     app.appendChild(features());
     app.appendChild(footer());
@@ -807,6 +875,8 @@ function render() {
   if (state.autoReplies) { app.appendChild(h('div', { 'class': 'section-h', text: 'Automatic replies' })); app.appendChild(autoRepliesCard()); }
   var bc = state.billing && state.billing.enabled ? billingCard() : null;
   if (bc) { app.appendChild(h('div', { 'class': 'section-h', text: 'Billing' })); app.appendChild(bc); }
+  app.appendChild(h('div', { 'class': 'section-h' }, [icon('history', 'sm'), 'Activity log']));
+  app.appendChild(activityCard());
   app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
   app.appendChild(features());
   app.appendChild(footer());

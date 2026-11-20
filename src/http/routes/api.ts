@@ -16,6 +16,7 @@ import {
   setPersonalLine,
 } from '../../db/numbers.js';
 import { getUserName, userNames } from '../../db/users.js';
+import { audit, describe, listAudit, toCsv } from '../../db/audit.js';
 import { saveMedia } from '../../media/store.js';
 import { exec, many, nowSec } from '../../db/pool.js';
 import { setDefaultNumber, setSelfLinkEnabled } from '../../db/portals.js';
@@ -41,6 +42,7 @@ apiRoutes.use('/api/*', requireSession);
 //  - administrators: everything;
 //  - an employee: link / reconnect / unlink / rename / delete THEIR OWN WhatsApp number, and use
 //    company numbers plus their own in the CRM tab. Never a colleague's number or its QR code.
+apiRoutes.on(['GET'], ['/api/audit', '/api/audit.csv'], requireAdmin);
 apiRoutes.on(['POST', 'PUT'], ['/api/lines', '/api/settings', '/api/auto-replies', '/api/billing/checkout', '/api/billing/portal', '/api/billing/seats'], requireAdmin);
 
 const MAX_NUMBERS_PER_PORTAL = 50;
@@ -78,6 +80,16 @@ async function numberFor(c: Context<ApiEnv>, access: 'manage' | 'admin'): Promis
   if (c.get('isAdmin') || (access === 'manage' && isOwn(c, n))) return n;
   return c.json(forbidden, 403);
 }
+
+/** Record an action of the signed-in person (who, from which IP) in the activity log. */
+async function log(c: Context<ApiEnv>, action: string, target?: { type: string; id?: string | null; label?: string | null }, details?: Record<string, unknown>) {
+  const portal = c.get('portal');
+  const userId = c.get('userId');
+  const ip = c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
+  const name = userId ? await getUserName(portal.id, userId).catch(() => null) : null;
+  await audit({ portalId: portal.id, actor: { type: 'user', userId, name }, action, target, details, ip });
+}
+const numTarget = (n: WaNumber) => ({ type: 'number', id: n.id, label: n.label });
 
 /** In the CRM tab an employee sends from company numbers or their own, never a colleague's. */
 const canSendFrom = (c: Context<ApiEnv>, n: WaNumber) => c.get('isAdmin') || n.owner_user_id == null || isOwn(c, n);
@@ -164,6 +176,7 @@ apiRoutes.post('/api/lines', async (c) => {
     const lineId = Number(id);
     if (!Number.isInteger(lineId) || lineId <= 0) throw new Error('Bitrix24 did not return the new Open Line');
     await recordAppLine(portal.id, lineId);
+    await log(c, 'line.created', { type: 'line', id: String(lineId), label: name });
     return c.json({ line: { id: lineId, name } }, 201);
   } catch (err) {
     logger.warn({ err: (err as Error).message }, 'open line creation failed');
@@ -185,6 +198,7 @@ apiRoutes.post('/api/billing/checkout', async (c) => {
   const quantity = Math.min(50, Math.max(1, Math.floor(Number(body.quantity) || used || 1)));
   try {
     const session = await createCheckout({ portalId: portal.id, customerId: portal.stripe_customer_id, quantity, returnUrl: billingReturn() });
+    await log(c, 'billing.checkout', undefined, { quantity });
     return c.json({ url: session.url });
   } catch (err) {
     logger.warn({ err: (err as Error).message }, 'checkout failed');
@@ -212,6 +226,7 @@ apiRoutes.post('/api/billing/seats', async (c) => {
   if (quantity < used) return c.json({ error: 'BAD_REQUEST', message: `You have ${used} numbers. Remove some before lowering the plan to ${quantity}.` }, 400);
   try {
     await applySubscription(portal.id, await setQuantity(portal.stripe_subscription_id, quantity));
+    await log(c, 'billing.seats', undefined, { quantity, from: portal.sub_quantity });
     return c.json({ ok: true });
   } catch (err) {
     return c.json({ error: 'STRIPE', message: `Could not change the plan: ${(err as Error).message}` }, 502);
@@ -223,13 +238,17 @@ apiRoutes.put('/api/auto-replies', async (c) => {
   const portal = c.get('portal');
   const settings = normalizeAutoReplies(await c.req.json().catch(() => ({})));
   await saveAutoReplies(portal.id, settings);
+  await log(c, 'auto_replies.updated', undefined, settings as unknown as Record<string, unknown>);
   const result = await applyAutoReplies({ ...portal, auto_replies: settings as unknown as Record<string, unknown> }, settings);
   return c.json({ autoReplies: settings, ...result, lines: await whatsappLines(portal.id) });
 });
 
 apiRoutes.put('/api/settings', async (c) => {
   const body = await c.req.json<{ selfLinkEnabled?: boolean }>().catch(() => ({}) as { selfLinkEnabled?: boolean });
-  if (typeof body.selfLinkEnabled === 'boolean') await setSelfLinkEnabled(c.get('portal').id, body.selfLinkEnabled);
+  if (typeof body.selfLinkEnabled === 'boolean') {
+    await setSelfLinkEnabled(c.get('portal').id, body.selfLinkEnabled);
+    await log(c, 'settings.self_link', undefined, { enabled: body.selfLinkEnabled });
+  }
   return c.json({ ok: true });
 });
 
@@ -272,6 +291,7 @@ apiRoutes.post('/api/numbers', async (c) => {
   const number = await createNumber(portal.id, label, personal ? userId : null);
   // A salesperson's own number never becomes the company default for robots and SMS.
   if (!portal.default_number_id && !personal) await setDefaultNumber(portal.id, number.id);
+  await log(c, 'number.created', numTarget(number), { personal });
   return c.json({ number: publicNumber(number) }, 201);
 });
 
@@ -303,6 +323,7 @@ apiRoutes.post('/api/numbers/:id/personal-line', async (c) => {
     await recordAppLine(portal.id, lineId);
     await activateLine(portal, lineId, true);
     await setPersonalLine(n.id, lineId);
+    await log(c, 'line.personal_created', { type: 'line', id: String(lineId), label: name }, { numberId: n.id });
     return c.json({ line: { id: lineId, name } }, 201);
   } catch (err) {
     logger.warn({ err: (err as Error).message, numberId: n.id }, 'personal open line failed');
@@ -315,6 +336,7 @@ apiRoutes.post('/api/numbers/:id/connect', async (c) => {
   if (n instanceof Response) return n;
   if (!licenseOf(c.get('portal')).canSend) return c.json({ error: 'PAYMENT_REQUIRED', message: PAYMENT_REQUIRED_MESSAGE }, 402);
   await getEngine().start(n.id);
+  await log(c, 'number.connect', numTarget(n));
   return c.json({ ok: true });
 });
 
@@ -336,6 +358,7 @@ apiRoutes.post('/api/numbers/:id/pairing-code', async (c) => {
   try {
     await getEngine().start(n.id);
     const code = await getEngine().requestPairingCode(n.id, phone);
+    await log(c, 'number.pairing_code', numTarget(n));
     return c.json({ code: code.match(/.{1,4}/g)?.join('-') ?? code });
   } catch (err) {
     return c.json({ error: 'PAIRING_FAILED', message: (err as Error).message }, 400);
@@ -346,6 +369,7 @@ apiRoutes.post('/api/numbers/:id/disconnect', async (c) => {
   const n = await numberFor(c, 'manage');
   if (n instanceof Response) return n;
   await getEngine().stop(n.id);
+  await log(c, 'number.paused', numTarget(n));
   return c.json({ ok: true });
 });
 
@@ -353,6 +377,7 @@ apiRoutes.post('/api/numbers/:id/logout', async (c) => {
   const n = await numberFor(c, 'manage');
   if (n instanceof Response) return n;
   await getEngine().logout(n.id);
+  await log(c, 'number.logged_out', numTarget(n), { phone: n.phone });
   return c.json({ ok: true });
 });
 
@@ -364,6 +389,7 @@ apiRoutes.delete('/api/numbers/:id', async (c) => {
   if (n.line_id) await activateLine(portal, n.line_id, false).catch(() => undefined);
   if (portal.default_number_id === n.id) await setDefaultNumber(portal.id, null);
   await deleteNumber(n.id);
+  await log(c, 'number.deleted', numTarget(n), { phone: n.phone, personal: !!n.owner_user_id, lineId: n.line_id });
   return c.json({ ok: true });
 });
 
@@ -382,6 +408,7 @@ apiRoutes.post('/api/numbers/:id/line', async (c) => {
     logger.warn({ err: (err as Error).message }, 'line binding failed');
     return c.json({ error: 'BITRIX', message: `Bitrix24 refused: ${(err as Error).message}` }, 502);
   }
+  await log(c, 'number.line_changed', numTarget(n), { lineId, fromLineId: n.line_id });
   return c.json({ ok: true });
 });
 
@@ -390,6 +417,7 @@ apiRoutes.post('/api/numbers/:id/groups', async (c) => {
   if (n instanceof Response) return n;
   const body = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as { enabled?: boolean });
   await setGroupsEnabled(n.id, Boolean(body.enabled));
+  await log(c, 'number.groups', numTarget(n), { enabled: Boolean(body.enabled) });
   return c.json({ ok: true });
 });
 
@@ -398,6 +426,7 @@ apiRoutes.post('/api/numbers/:id/default', async (c) => {
   const n = await numberFor(c, 'admin');
   if (n instanceof Response) return n;
   await setDefaultNumber(portal.id, n.id);
+  await log(c, 'number.default', numTarget(n));
   return c.json({ ok: true });
 });
 
@@ -408,7 +437,34 @@ apiRoutes.post('/api/numbers/:id/label', async (c) => {
   const label = (body.label ?? '').trim().slice(0, 60);
   if (!label) return c.json({ error: 'BAD_REQUEST', message: 'Name required' }, 400);
   await exec('UPDATE wa_numbers SET label=$1, updated_at=$2 WHERE id=$3', [label, nowSec(), n.id]);
+  if (label !== n.label) await log(c, 'number.renamed', { type: 'number', id: n.id, label }, { from: n.label, to: label });
   return c.json({ ok: true });
+});
+
+// ---- Activity log (administrators) ----------------------------------------------------------
+
+apiRoutes.get('/api/audit', async (c) => {
+  const portal = c.get('portal');
+  const rows = await listAudit(portal.id, {
+    beforeId: /^\d+$/.test(c.req.query('before') ?? '') ? c.req.query('before') : null,
+    limit: Number(c.req.query('limit')) || 30,
+    category: c.req.query('category') ?? null,
+  });
+  return c.json({
+    entries: rows.map((r) => ({ id: r.id, at: r.at, actorType: r.actor_type, actorName: r.actor_name, actorUserId: r.actor_user_id, action: r.action, text: describe(r), ip: r.ip })),
+    next: rows.at(-1)?.id ?? null,
+  });
+});
+
+apiRoutes.get('/api/audit.csv', async (c) => {
+  const rows = await listAudit(c.get('portal').id, { limit: 500, category: c.req.query('category') ?? null });
+  return new Response(toCsv(rows), {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="whatsapp-activity-${new Date().toISOString().slice(0, 10)}.csv"`,
+      'Cache-Control': 'no-store',
+    },
+  });
 });
 
 // ---- CRM tab -------------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import { getPortalByMemberId, markUninstalled, setApplicationToken } from '../..
 import { cancelAtPeriodEnd } from '../../billing/stripe.js';
 import { logger } from '../../logger.js';
 import { purgePortal } from '../../sync/retention.js';
+import { audit } from '../../db/audit.js';
 import { outboundQueue } from '../../queue/queues.js';
 import type { OutboundFile } from '../../types.js';
 import { NOTE_PREFIX } from '../../util/format.js';
@@ -87,6 +88,7 @@ eventRoutes.post('/events/uninstall', async (c) => {
   // new QR. The retention job deletes the portal after UNINSTALLED_KEEP_DAYS.
   for (const n of await listNumbers(portal.id)) await getEngine().stop(n.id).catch(() => undefined);
   await markUninstalled(portal.id);
+  await audit({ portalId: portal.id, actor: { type: 'bitrix', name: 'Bitrix24' }, action: 'app.uninstalled' });
   if (portal.stripe_subscription_id && portal.sub_status && portal.sub_status !== 'canceled') {
     await cancelAtPeriodEnd(portal.stripe_subscription_id).catch((err) =>
       logger.warn({ err: (err as Error).message }, 'could not stop billing on uninstall'),

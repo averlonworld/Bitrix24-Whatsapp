@@ -1,3 +1,4 @@
+import { audit } from '../db/audit.js';
 import { getPortalById, getPortalByStripeCustomer, setBilling } from '../db/portals.js';
 import { logger } from '../logger.js';
 import type { Portal } from '../types.js';
@@ -13,6 +14,13 @@ export async function applySubscription(portalId: string, sub: StripeSubscriptio
     subPeriodEnd: sub.current_period_end ?? null,
   });
   logger.info({ portalId, status: deleted ? 'canceled' : sub.status, quantity: sub.items?.data?.[0]?.quantity }, 'subscription updated');
+  await audit({
+    portalId,
+    actor: { type: 'stripe', name: 'Stripe' },
+    action: 'billing.subscription',
+    target: { type: 'subscription', id: sub.id, label: null },
+    details: { status: deleted ? 'canceled' : sub.status, quantity: sub.items?.data?.[0]?.quantity ?? null },
+  });
 }
 
 async function portalFor(metadataPortalId: string | undefined, customerId: string | undefined): Promise<Portal | null> {

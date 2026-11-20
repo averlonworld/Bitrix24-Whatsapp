@@ -1,4 +1,5 @@
 import { cancelNow } from '../billing/stripe.js';
+import { purgeAudit } from '../db/audit.js';
 import { listNumbers } from '../db/numbers.js';
 import { deletePortal, listUninstalledBefore } from '../db/portals.js';
 import { exec, nowSec } from '../db/pool.js';
@@ -32,6 +33,7 @@ export async function runRetention(): Promise<void> {
     );
   }
   await exec('DELETE FROM rest_log WHERE created_at < $1', [nowSec() - REST_LOG_KEEP_DAYS * 86_400]);
+  await purgeAudit();
 }
 
 export function startRetention(): NodeJS.Timeout {

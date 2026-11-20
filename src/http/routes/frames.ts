@@ -5,6 +5,7 @@ import { parseCrmPlacement } from '../../bitrix/crm.js';
 import { ensureRegistered } from '../../bitrix/registration.js';
 import { config } from '../../config.js';
 import { recordViewer } from '../../db/users.js';
+import { audit } from '../../db/audit.js';
 import { listNumbers } from '../../db/numbers.js';
 import { logger } from '../../logger.js';
 import type { Portal } from '../../types.js';
@@ -104,6 +105,7 @@ function page(c: Context, portal: Portal, viewer: Viewer, view: View, placement:
 frameRoutes.post('/install', async (c) => {
   const r = await portalFor(c, { install: true });
   if (r instanceof Response) return r;
+  await audit({ portalId: r.portal.id, actor: { type: 'user', userId: r.viewer.userId, name: r.viewer.name ?? null }, action: 'app.installed' });
   return c.html(installFinishedPage(), 200, { 'Cache-Control': 'no-store' });
 });
 
