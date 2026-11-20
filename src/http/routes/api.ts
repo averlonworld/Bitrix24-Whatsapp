@@ -26,6 +26,7 @@ import type { WaNumber } from '../../types.js';
 import { normalizePhone } from '../../util/phone.js';
 import { getEngine } from '../../whatsapp/instance.js';
 import { missingScopes } from '../../bitrix/scopes.js';
+import { applyAutoReplies, autoRepliesOf, lineParams, normalizeAutoReplies, recordAppLine, saveAutoReplies, whatsappLines } from '../../bitrix/autoReplies.js';
 import { billingEnabled, licenseOf, PAYMENT_REQUIRED_MESSAGE } from '../../billing/license.js';
 import { createCheckout, createPortalSession, setQuantity } from '../../billing/stripe.js';
 import { applySubscription } from '../../billing/sync.js';
@@ -40,7 +41,7 @@ apiRoutes.use('/api/*', requireSession);
 //  - administrators: everything;
 //  - an employee: link / reconnect / unlink / rename / delete THEIR OWN WhatsApp number, and use
 //    company numbers plus their own in the CRM tab. Never a colleague's number or its QR code.
-apiRoutes.on(['POST', 'PUT'], ['/api/lines', '/api/settings', '/api/billing/checkout', '/api/billing/portal', '/api/billing/seats'], requireAdmin);
+apiRoutes.on(['POST', 'PUT'], ['/api/lines', '/api/settings', '/api/auto-replies', '/api/billing/checkout', '/api/billing/portal', '/api/billing/seats'], requireAdmin);
 
 const MAX_NUMBERS_PER_PORTAL = 50;
 
@@ -140,6 +141,7 @@ apiRoutes.get('/api/state', async (c) => {
     selfLinkEnabled: portal.self_link_enabled,
     missingScopes: isAdmin ? await missingScopes(portal) : [],
     billing: { enabled: billingEnabled(), license: licenseOf(portal), numbersUsed: numbers.length, hasCustomer: !!portal.stripe_customer_id },
+    autoReplies: isAdmin ? autoRepliesOf(portal) : null,
     defaultNumberId: portal.default_number_id,
     numbers: visible.map((n) => ({ ...publicNumber(n, names), stats: stats.get(n.id) ?? null })),
   });
@@ -157,9 +159,11 @@ apiRoutes.post('/api/lines', async (c) => {
   const body = await c.req.json<{ name?: string }>().catch(() => ({}) as { name?: string });
   const name = (body.name ?? '').trim().slice(0, 80) || 'WhatsApp';
   try {
-    const id = await call<number | string>(c.get('portal'), 'imopenlines.config.add', { PARAMS: { LINE_NAME: name } });
+    const portal = c.get('portal');
+    const id = await call<number | string>(portal, 'imopenlines.config.add', { PARAMS: { LINE_NAME: name, ...lineParams(autoRepliesOf(portal)) } });
     const lineId = Number(id);
     if (!Number.isInteger(lineId) || lineId <= 0) throw new Error('Bitrix24 did not return the new Open Line');
+    await recordAppLine(portal.id, lineId);
     return c.json({ line: { id: lineId, name } }, 201);
   } catch (err) {
     logger.warn({ err: (err as Error).message }, 'open line creation failed');
@@ -212,6 +216,15 @@ apiRoutes.post('/api/billing/seats', async (c) => {
   } catch (err) {
     return c.json({ error: 'STRIPE', message: `Could not change the plan: ${(err as Error).message}` }, 502);
   }
+});
+
+/** Save the automatic replies and apply them to every WhatsApp Open Line at once. */
+apiRoutes.put('/api/auto-replies', async (c) => {
+  const portal = c.get('portal');
+  const settings = normalizeAutoReplies(await c.req.json().catch(() => ({})));
+  await saveAutoReplies(portal.id, settings);
+  const result = await applyAutoReplies({ ...portal, auto_replies: settings as unknown as Record<string, unknown> }, settings);
+  return c.json({ autoReplies: settings, ...result, lines: await whatsappLines(portal.id) });
 });
 
 apiRoutes.put('/api/settings', async (c) => {
@@ -282,10 +295,12 @@ apiRoutes.post('/api/numbers/:id/personal-line', async (c) => {
         QUEUE_TYPE: 'all',
         CRM: 'Y',
         CRM_FORWARD: 'N', // stay with the number's owner, not whoever is responsible in CRM
+        ...lineParams(autoRepliesOf(portal)), // no automatic messages unless an admin turned them on
       },
     });
     const lineId = Number(id);
     if (!Number.isInteger(lineId) || lineId <= 0) throw new Error('Bitrix24 did not create the Open Line');
+    await recordAppLine(portal.id, lineId);
     await activateLine(portal, lineId, true);
     await setPersonalLine(n.id, lineId);
     return c.json({ line: { id: lineId, name } }, 201);

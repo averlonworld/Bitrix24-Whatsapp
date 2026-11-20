@@ -17,6 +17,7 @@ export interface Portal {
   sub_status: string | null;
   sub_quantity: number | null;
   sub_period_end: number | null;
+  auto_replies: Record<string, unknown> | null;
   installed_at: number;
   updated_at: number;
 }

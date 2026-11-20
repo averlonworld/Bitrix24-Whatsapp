@@ -213,6 +213,7 @@ function load() {
       state.missingScopes = r[0].missingScopes || [];
       state.userId = r[0].userId || null; state.selfLinkEnabled = r[0].selfLinkEnabled !== false;
       state.billing = r[0].billing || { enabled: false };
+      state.autoReplies = r[0].autoReplies || null;
       state.loaded = true; state.error = null; render();
     })
     .catch(function (e) { state.error = e.message; state.loaded = true; render(); });
@@ -223,6 +224,8 @@ function act(p, okMsg) {
 }
 function userIsBusy() {
   if (modal.classList.contains('open') || document.querySelector('.menu.open') || document.querySelector('.name-input')) return true;
+  var saveAuto = Array.prototype.slice.call(document.querySelectorAll('button')).filter(function (b) { return b.textContent === 'Save automatic replies'; })[0];
+  if (saveAuto && !saveAuto.disabled) return true; // unsaved automatic-reply edits
   var a = document.activeElement;
   return !!(a && app.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName));
 }
@@ -284,6 +287,57 @@ function billingCard() {
     h('div', { 'class': 'fi', style: 'width:40px;height:40px;border-radius:10px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center' }, [icon('bill')]),
     h('div', { 'class': 'grow', style: 'min-width:220px' }, [h('b', { text: title }), h('div', { 'class': 'muted', style: 'font-size:13px', text: sub })]),
     h('div', { 'class': 'row' }, actions)
+  ]);
+}
+
+/* ---------- automatic replies (Open Line messages sent to customers) ---------- */
+function autoRepliesCard() {
+  var a = JSON.parse(JSON.stringify(state.autoReplies));
+  var rows = [
+    { key: 'welcome', title: 'Welcome message', text: 'Sent when a customer starts a new conversation.' },
+    { key: 'away', title: 'Away message', text: 'Sent if no one in your team answers in time.' },
+    { key: 'closing', title: 'Closing message', text: 'Sent when the conversation is closed.' },
+    { key: 'rating', title: 'Ask for a rating', text: 'Bitrix24 asks the customer to rate the conversation after it closes.' }
+  ];
+  var dirty = false;
+  var save = h('button', { 'class': 'btn primary', text: 'Save automatic replies', disabled: true });
+  function changed() { dirty = true; save.disabled = false; }
+  var list = h('div', { 'class': 'toggles', style: 'gap:18px' }, rows.map(function (r) {
+    var body = h('div', { style: 'margin:8px 0 0 50px' + (a[r.key].on && r.key !== 'rating' ? '' : ';display:none') });
+    if (r.key !== 'rating') {
+      var ta = h('textarea', { maxlength: '1000', 'aria-label': r.title, style: 'min-height:64px', oninput: function () { a[r.key].text = ta.value; changed(); } });
+      ta.value = a[r.key].text;
+      body.appendChild(ta);
+      if (r.key === 'away') {
+        var sel = h('select', { style: 'width:auto;margin-top:8px', 'aria-label': 'Wait before the away message', onchange: function () { a.away.minutes = Number(sel.value); changed(); } },
+          [1, 5, 15, 30, 60].map(function (m) { var o = h('option', { value: String(m), text: 'after ' + m + (m === 1 ? ' minute' : ' minutes') + ' without an answer' }); if (m === a.away.minutes) o.selected = true; return o; }));
+        body.appendChild(sel);
+      }
+    }
+    return h('div', {}, [switchCtl({ title: r.title, text: r.text, checked: a[r.key].on, onchange: function (v) {
+      a[r.key].on = v; if (r.key !== 'rating') body.style.display = v ? '' : 'none'; changed(); fit();
+    } }), body]);
+  }));
+  save.addEventListener('click', function () {
+    busy(save, true);
+    api('PUT', '/api/auto-replies', a).then(function (r) {
+      state.autoReplies = r.autoReplies; dirty = false;
+      var n = r.applied.length;
+      if (r.failed.length) toast('Saved. Applied to ' + n + ' Open Line' + (n === 1 ? '' : 's') + '; ' + r.failed.length + ' could not be updated (' + r.failed[0].error + ').', 'bad');
+      else toast(n ? 'Saved and applied to ' + n + ' WhatsApp Open Line' + (n === 1 ? '' : 's') + '.' : 'Saved. It applies as soon as a WhatsApp number uses an Open Line.');
+      busy(save, false); save.disabled = true;
+    }).catch(function (e) { busy(save, false); toast(e.message, 'bad'); });
+  });
+  var allOff = !rows.some(function (r) { return a[r.key].on; });
+  return h('div', { 'class': 'card pad' }, [
+    h('p', { style: 'margin:0 0 16px;color:var(--text-2)', text: allOff
+      ? 'Off: customers only receive messages your team writes. Switch on the automatic messages you want and word them your way.'
+      : 'Customers receive the automatic messages switched on below, on WhatsApp.' }),
+    list,
+    h('div', { 'class': 'row', style: 'margin-top:18px;justify-content:space-between' }, [
+      h('span', { 'class': 'help', style: 'margin:0;max-width:560px', text: 'Applies to every Open Line your WhatsApp numbers use. If an Open Line also serves other channels, they get the same messages.' }),
+      save
+    ])
   ]);
 }
 
@@ -732,6 +786,7 @@ function render() {
       'Some features fail without it (for example: messages typed on the phone, copies of CRM sends in the chat, disconnect alerts). Fix: Developer resources → Integrations → this app → Edit → Assign permissions → add it → Save → Reinstall.'])]));
   if (!state.numbers.length) {
     if (!state.error) app.appendChild(emptyState());
+    if (state.autoReplies) { app.appendChild(h('div', { 'class': 'section-h', text: 'Automatic replies' })); app.appendChild(autoRepliesCard()); }
     var bc0 = state.billing && state.billing.enabled ? billingCard() : null;
     if (bc0) { app.appendChild(h('div', { 'class': 'section-h', text: 'Billing' })); app.appendChild(bc0); }
     app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
@@ -749,6 +804,7 @@ function render() {
   app.appendChild(h('div', { 'class': 'section-h' }, ['Sales team', h('span', { 'class': 'count', text: String(team.length) })]));
   app.appendChild(teamCard(team.length));
   team.forEach(function (n) { app.appendChild(numberCard(n)); });
+  if (state.autoReplies) { app.appendChild(h('div', { 'class': 'section-h', text: 'Automatic replies' })); app.appendChild(autoRepliesCard()); }
   var bc = state.billing && state.billing.enabled ? billingCard() : null;
   if (bc) { app.appendChild(h('div', { 'class': 'section-h', text: 'Billing' })); app.appendChild(bc); }
   app.appendChild(h('div', { 'class': 'section-h', text: 'What you can do' }));
