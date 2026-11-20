@@ -28,7 +28,14 @@ export function installFinishedPage(): string {
 <script src="https://api.bitrix24.com/api/v1/"></script></head>
 <body><div class="wrap"><div class="card empty">
 <div class="art"><span class="ico"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3.2c-5 0-9 3.5-9 7.9 0 2.3 1.1 4.4 2.9 5.8L5 21.2l4.5-1.8c.8.2 1.6.3 2.5.3 5 0 9-3.5 9-7.9s-4-8.6-9-8.6z"/></svg></span></div>
-<h2>WhatsApp is installed</h2><p>Open <b>WhatsApp</b> from the left menu to link your first number. It takes about a minute.</p>
+<h2>WhatsApp is installed</h2>
+<p class="qr-status" style="justify-content:center"><span class="spin" style="width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite"></span> Opening the app and a one-minute tour…</p>
+<p class="muted" id="fallback" style="display:none">If nothing happens, open <b>WhatsApp</b> from the left menu.</p>
 </div></div>
-<script>BX24.init(function(){BX24.installFinish();});</script></body></html>`;
+<script>
+setTimeout(function(){ document.getElementById('fallback').style.display = ''; }, 6000);
+// installFinish tells Bitrix24 the install is complete; it then opens the app itself (Market requirement),
+// where the onboarding tutorial starts on first open.
+BX24.init(function(){ BX24.installFinish(); });
+</script></body></html>`;
 }

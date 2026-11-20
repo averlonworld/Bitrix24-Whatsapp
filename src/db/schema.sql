@@ -153,3 +153,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_portal ON audit_log(portal_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+
+-- Onboarding tutorial: when each person finished or skipped it (NULL = show it on next open).
+ALTER TABLE portal_users ADD COLUMN IF NOT EXISTS onboarded_at BIGINT;

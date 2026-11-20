@@ -34,6 +34,8 @@ var ICONS = {
   bill: S('<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>'),
   history: S('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>'),
   download: S('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
+  help: S('<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>'),
+  shield: S('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>'),
   clip: S('<path d="m21.4 11-8.5 8.5a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>'),
   user: S('<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>'),
   route: S('<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>')
@@ -216,7 +218,9 @@ function load() {
       state.userId = r[0].userId || null; state.selfLinkEnabled = r[0].selfLinkEnabled !== false;
       state.billing = r[0].billing || { enabled: false };
       state.autoReplies = r[0].autoReplies || null;
+      state.onboarded = r[0].onboarded !== false;
       state.loaded = true; state.error = null; render();
+      if (!state.onboarded && !tourShown && !modal.classList.contains('open')) startTour();
     })
     .catch(function (e) { state.error = e.message; state.loaded = true; render(); });
 }
@@ -290,6 +294,68 @@ function billingCard() {
     h('div', { 'class': 'grow', style: 'min-width:220px' }, [h('b', { text: title }), h('div', { 'class': 'muted', style: 'font-size:13px', text: sub })]),
     h('div', { 'class': 'row' }, actions)
   ]);
+}
+
+/* ---------- onboarding tutorial (first open after installing from the Market) ---------- */
+var tourShown = false;
+function tourSteps() {
+  var linked = state.numbers.some(function (n) { return n.phone; });
+  if (ADMIN) return [
+    { art: 'wa', title: 'Welcome to WhatsApp for Bitrix24', text: 'Chat with customers on WhatsApp right inside Bitrix24: in Contact Center, in every CRM record and in automation rules. Here is how it works, in one minute.' },
+    { art: 'qr', title: 'Link a WhatsApp number by QR code', text: 'Scan a QR code with your phone, just like WhatsApp Web. Your phone keeps working as usual and no Meta approval is needed. Works with WhatsApp and WhatsApp Business.' },
+    { art: 'inbox', title: 'Chats arrive in Contact Center', text: 'Each number feeds an Open Line, which we can create for you in one click. Your operators answer from Bitrix24 and their replies go out on WhatsApp, with the customer linked to CRM.' },
+    { art: 'users', title: 'Give your sales team their own WhatsApp', text: 'Under "Sales team", let employees link their own numbers. Each salesperson then messages clients from their number, and replies go straight to them. You stay in control of every number.' },
+    { art: 'crm', title: 'Work from CRM, automate the rest', text: 'Every Lead, Deal, Contact and Company gets a WhatsApp tab to send messages and quotations, logged on the timeline. Add robots to pipeline stages, set automatic replies, and see every change in the activity log.' },
+    { art: 'shield', title: 'Keep your numbers safe', text: 'Use WhatsApp for one-to-one conversations, never bulk messaging, and keep each phone online at least every 14 days. If a number disconnects, you get a Bitrix24 notification.',
+      cta: linked ? null : { label: 'Link my first number', run: function () { startAdd(); } } }
+  ];
+  var mine = myNumber();
+  return [
+    { art: 'wa', title: 'Your WhatsApp, inside Bitrix24', text: 'Message your clients on WhatsApp from Bitrix24 with your own number, and keep every conversation linked to the right CRM record.' },
+    { art: 'qr', title: 'Link your WhatsApp in 2 minutes', text: 'Click "Link my WhatsApp" and scan the QR code with your phone (WhatsApp, then Linked devices, then Link a device). Your phone keeps working as usual.' },
+    { art: 'crm', title: 'Message clients from any CRM record', text: 'Open a Lead, Deal, Contact or Company and use the WhatsApp tab: write a message or attach a quotation, then Send. Client replies come straight to you.' },
+    { art: 'shield', title: 'Keep your number safe', text: 'One-to-one conversations only, no bulk messages. Open WhatsApp on your phone at least every 14 days so the link stays active.',
+      cta: !mine && state.selfLinkEnabled ? { label: 'Link my WhatsApp', run: function () { startPersonal(); } } : null }
+  ];
+}
+function finishTour() {
+  if (!state.onboarded) { state.onboarded = true; api('POST', '/api/onboarding/done').catch(function () {}); }
+}
+function startTour() {
+  tourShown = true;
+  var steps = tourSteps(), at = 0;
+  var box = h('div', {});
+  function keys(e) {
+    if (!modal.classList.contains('open')) return document.removeEventListener('keydown', keys);
+    if (e.key === 'ArrowRight' && at < steps.length - 1) { at++; draw(); }
+    if (e.key === 'ArrowLeft' && at > 0) { at--; draw(); }
+  }
+  function draw() {
+    var st = steps[at], last = at === steps.length - 1;
+    clear(box);
+    box.appendChild(h('div', { 'class': 'tour-art' }, [icon(st.art)]));
+    box.appendChild(h('div', { 'class': 'kicker', style: 'text-align:center', text: 'Step ' + (at + 1) + ' of ' + steps.length }));
+    box.appendChild(h('h2', { 'class': 'tour-title', text: st.title }));
+    box.appendChild(h('p', { 'class': 'tour-text', text: st.text }));
+    box.appendChild(h('div', { 'class': 'tour-dots' }, steps.map(function (_, i) {
+      return h('button', { 'class': i === at ? 'on' : '', 'aria-label': 'Step ' + (i + 1), onclick: function () { at = i; draw(); } });
+    })));
+    var next = last
+      ? (st.cta ? h('button', { 'class': 'btn primary', onclick: function () { finishTour(); closeModal(); st.cta.run(); } }, [icon(st.art === 'shield' ? 'qr' : 'check', 'sm'), st.cta.label])
+                : h('button', { 'class': 'btn primary', text: 'Get started', onclick: function () { finishTour(); closeModal(); } }))
+      : h('button', { 'class': 'btn primary', text: 'Next', onclick: function () { at++; draw(); } });
+    box.appendChild(h('div', { 'class': 'dlg-f', style: 'padding:18px 0 0' }, [
+      h('button', { 'class': 'btn ghost', text: last && st.cta ? 'Maybe later' : 'Skip tutorial', onclick: function () { finishTour(); closeModal(); } }),
+      h('span', { 'class': 'grow' }),
+      at > 0 ? h('button', { 'class': 'btn', text: 'Back', onclick: function () { at--; draw(); } }) : null,
+      next
+    ]));
+    resizeModal();
+    setTimeout(function () { next.focus(); }, 20);
+  }
+  openModal([h('div', { 'class': 'dlg-b tour', style: 'padding:28px 28px 22px' }, [box])], { onClose: function () { finishTour(); document.removeEventListener('keydown', keys); } });
+  document.addEventListener('keydown', keys);
+  draw();
 }
 
 /* ---------- activity log (administrators) ---------- */
@@ -652,6 +718,7 @@ function header() {
     h('div', { 'class': 'titles' }, [h('h1', { text: 'WhatsApp' }), h('p', { text: 'Your WhatsApp numbers, connected to Contact Center and CRM.' })]),
     total ? h('span', { 'class': 'summary' }, [h('span', { 'class': 'dot ' + (online === total ? 'ok' : online ? 'warn' : 'bad') }),
       online + ' of ' + total + (total === 1 ? ' number' : ' numbers') + ' online']) : null,
+    h('button', { 'class': 'btn ghost', title: 'Show the tutorial again', onclick: startTour }, [icon('help', 'sm'), 'Tutorial']),
     total && ADMIN ? h('button', { 'class': 'btn primary', onclick: startAdd }, [icon('plus', 'sm'), 'Add number']) : null
   ]);
 }

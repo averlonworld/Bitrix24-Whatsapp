@@ -31,3 +31,12 @@ export const getUserName = (portalId: string, userId: number) =>
   many<{ name: string | null }>('SELECT name FROM portal_users WHERE portal_id=$1 AND user_id=$2', [portalId, userId]).then(
     (r) => r[0]?.name ?? null,
   );
+
+/** Has this person finished or skipped the onboarding tutorial? Unknown users count as done. */
+export const isOnboarded = (portalId: string, userId: number) =>
+  many<{ onboarded_at: number | null }>('SELECT onboarded_at FROM portal_users WHERE portal_id=$1 AND user_id=$2', [portalId, userId]).then(
+    (r) => !r[0] || r[0].onboarded_at !== null,
+  );
+
+export const markOnboarded = (portalId: string, userId: number) =>
+  exec('UPDATE portal_users SET onboarded_at=$1 WHERE portal_id=$2 AND user_id=$3', [nowSec(), portalId, userId]);

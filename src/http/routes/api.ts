@@ -15,7 +15,7 @@ import {
   setGroupsEnabled,
   setPersonalLine,
 } from '../../db/numbers.js';
-import { getUserName, userNames } from '../../db/users.js';
+import { getUserName, isOnboarded, markOnboarded, userNames } from '../../db/users.js';
 import { audit, describe, listAudit, toCsv } from '../../db/audit.js';
 import { saveMedia } from '../../media/store.js';
 import { exec, many, nowSec } from '../../db/pool.js';
@@ -154,6 +154,7 @@ apiRoutes.get('/api/state', async (c) => {
     missingScopes: isAdmin ? await missingScopes(portal) : [],
     billing: { enabled: billingEnabled(), license: licenseOf(portal), numbersUsed: numbers.length, hasCustomer: !!portal.stripe_customer_id },
     autoReplies: isAdmin ? autoRepliesOf(portal) : null,
+    onboarded: userId ? await isOnboarded(portal.id, userId).catch(() => true) : true,
     defaultNumberId: portal.default_number_id,
     numbers: visible.map((n) => ({ ...publicNumber(n, names), stats: stats.get(n.id) ?? null })),
   });
@@ -438,6 +439,13 @@ apiRoutes.post('/api/numbers/:id/label', async (c) => {
   if (!label) return c.json({ error: 'BAD_REQUEST', message: 'Name required' }, 400);
   await exec('UPDATE wa_numbers SET label=$1, updated_at=$2 WHERE id=$3', [label, nowSec(), n.id]);
   if (label !== n.label) await log(c, 'number.renamed', { type: 'number', id: n.id, label }, { from: n.label, to: label });
+  return c.json({ ok: true });
+});
+
+/** The onboarding tutorial was finished or skipped: do not show it again on any device. */
+apiRoutes.post('/api/onboarding/done', async (c) => {
+  const userId = c.get('userId');
+  if (userId) await markOnboarded(c.get('portal').id, userId);
   return c.json({ ok: true });
 });
 
