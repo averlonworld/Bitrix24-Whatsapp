@@ -13,6 +13,15 @@ import { mediaRoutes } from './routes/media.js';
 export function createApp() {
   const app = new Hono();
 
+  // Access log (method, path, status, time). Never query strings or bodies: they carry tokens.
+  app.use('*', async (c, next) => {
+    const path = new URL(c.req.url).pathname;
+    if (path === '/health') return next();
+    const t0 = Date.now();
+    await next();
+    logger.info({ method: c.req.method, path, status: c.res.status, ms: Date.now() - t0 }, 'request');
+  });
+
   // Light check for Docker. `?deep=1` also proves PostgreSQL and Redis answer - use it for uptime monitors.
   app.get('/health', async (c) => {
     if (c.req.query('deep') === undefined) return c.json({ ok: true });

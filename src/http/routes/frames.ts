@@ -44,7 +44,11 @@ async function readFrame(c: Context): Promise<FramePayload | null> {
     PLACEMENT_OPTIONS: get('PLACEMENT_OPTIONS') || undefined,
     LANG: get('LANG') || undefined,
   };
-  return p.REFRESH_ID && p.member_id ? p : null;
+  if (p.REFRESH_ID && p.member_id) return p;
+  // Field NAMES only (values are tokens): shows what Bitrix sent when an install cannot start.
+  const names = [...new Set([...query.keys(), ...(form ? [...form.keys()] : [])])];
+  logger.warn({ path: new URL(c.req.url).pathname, fields: names, domain: p.DOMAIN || null }, 'frame without REFRESH_ID/member_id');
+  return null;
 }
 
 /** Verified with oauth.bitrix.info - see bitrix/auth.ts. Throws on a forged or stale frame. */
@@ -56,7 +60,7 @@ async function portalFor(c: Context, { install = false } = {}): Promise<{ portal
   try {
     ({ portal, viewer } = await verifyAppOpen({ memberId: frame.member_id, refreshToken: frame.REFRESH_ID }));
   } catch (err) {
-    logger.warn({ err: (err as Error).message }, 'frame verification failed');
+    logger.warn({ err: (err as Error).message, code: (err as { code?: string }).code, domain: frame.DOMAIN || null }, 'frame verification failed');
     return c.text('Could not verify this Bitrix24 session. Reload the page.', 403);
   }
   if (viewer.userId) {
