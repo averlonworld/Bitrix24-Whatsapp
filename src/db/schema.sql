@@ -127,6 +127,9 @@ CREATE INDEX IF NOT EXISTS idx_rest_log_created ON rest_log(created_at);
 
 -- Automatic replies (Open Line welcome / no-answer / closing / rating). Off unless an admin turns them on.
 ALTER TABLE portals ADD COLUMN IF NOT EXISTS auto_replies JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Which Bitrix24 app (client_id) the portal installed: token refreshes must use that app's secret.
+ALTER TABLE portals ADD COLUMN IF NOT EXISTS client_id TEXT;
 -- Open Lines the app created (one-click and personal lines): the auto-reply settings always apply to them.
 CREATE TABLE IF NOT EXISTS app_lines (
   portal_id   UUID NOT NULL REFERENCES portals(id) ON DELETE CASCADE,

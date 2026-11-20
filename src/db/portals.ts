@@ -13,6 +13,8 @@ export interface PortalAuthInput {
   expiresIn: number;
   /** Only events carry this - never the iframe POST. */
   applicationToken?: string | null;
+  /** The app the tokens were issued to (see config.bitrixApps). */
+  clientId?: string | null;
 }
 
 export const getPortalByMemberId = (memberId: string) =>
@@ -29,8 +31,8 @@ export async function upsertPortal(input: PortalAuthInput): Promise<Portal> {
   const ts = nowSec();
   const row = await one<Portal>(
     `INSERT INTO portals (id, member_id, domain, client_endpoint, access_token, refresh_token,
-                          access_expires_at, application_token, status, installed_at, updated_at, trial_ends_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,$9,$10)
+                          access_expires_at, application_token, status, installed_at, updated_at, trial_ends_at, client_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,$9,$10,$11)
      ON CONFLICT (member_id) DO UPDATE SET
        domain            = EXCLUDED.domain,
        client_endpoint   = EXCLUDED.client_endpoint,
@@ -39,6 +41,7 @@ export async function upsertPortal(input: PortalAuthInput): Promise<Portal> {
        access_expires_at = EXCLUDED.access_expires_at,
        application_token = COALESCE(EXCLUDED.application_token, portals.application_token),
        status            = 'active',
+       client_id         = COALESCE(EXCLUDED.client_id, portals.client_id),
        updated_at        = EXCLUDED.updated_at
      RETURNING *`,
     [
@@ -52,6 +55,7 @@ export async function upsertPortal(input: PortalAuthInput): Promise<Portal> {
       input.applicationToken ?? null,
       ts,
       ts + config().trialDays * 86_400, // the free trial starts at the first install, once
+      input.clientId ?? null,
     ],
   );
   if (!row) throw new Error('portal upsert failed');

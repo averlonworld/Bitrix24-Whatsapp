@@ -80,6 +80,7 @@ export async function verifyAppOpen(input: { memberId: string; refreshToken: str
     refreshToken: tokens.refresh_token,
     expiresIn: tokens.expires_in,
     applicationToken: null,
+    clientId: tokens.client_id,
   });
   return { portal, viewer };
 }
@@ -106,5 +107,6 @@ export async function verifyAndStorePortal(input: {
     refreshToken: tokens.refresh_token,
     expiresIn: tokens.expires_in,
     applicationToken: input.applicationToken ?? null,
+    clientId: tokens.client_id,
   });
 }

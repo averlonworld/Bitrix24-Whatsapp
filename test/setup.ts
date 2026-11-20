@@ -6,6 +6,7 @@ setConfigForTests({
   port: 0,
   bitrixClientId: 'local.test',
   bitrixClientSecret: 'secret',
+  bitrixApps: [{ clientId: 'local.test', clientSecret: 'secret' }],
   databaseUrl: process.env.TEST_DATABASE_URL ?? '',
   redisUrl: 'redis://localhost:6379',
   tokenEncKey: randomBytes(32).toString('base64'),

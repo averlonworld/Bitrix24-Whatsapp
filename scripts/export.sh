@@ -30,7 +30,7 @@ $COMPOSE exec -T postgres pg_dump -U wa --clean --if-exists wa | gzip > "$TMP/db
 
 # Only what must survive the move. Server-specific values (DOMAIN, PUBLIC_URL, POSTGRES_PASSWORD) stay
 # with the new server.
-grep -E '^(BITRIX_CLIENT_ID|BITRIX_CLIENT_SECRET|TOKEN_ENC_KEY|APP_SECRET|CONNECTOR_ID|CONNECTOR_NAME|CONNECTOR_VERSION)=' .env > "$TMP/carry.env"
+grep -E '^(BITRIX_CLIENT_ID|BITRIX_CLIENT_SECRET|BITRIX_EXTRA_APPS|TOKEN_ENC_KEY|APP_SECRET|CONNECTOR_ID|CONNECTOR_NAME|CONNECTOR_VERSION)=' .env > "$TMP/carry.env"
 
 umask 077
 tar -czf "$OUT" -C "$TMP" db.sql.gz carry.env

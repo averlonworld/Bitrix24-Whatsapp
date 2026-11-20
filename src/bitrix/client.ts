@@ -33,7 +33,7 @@ async function refresh(portal: Portal): Promise<string> {
     if (fresh.access_expires_at > nowSec() + 30 && fresh.access_token !== portal.access_token) {
       return decrypt(fresh.access_token, config().tokenEncKey);
     }
-    const tokens = await exchangeRefreshToken(decrypt(fresh.refresh_token, config().tokenEncKey));
+    const tokens = await exchangeRefreshToken(decrypt(fresh.refresh_token, config().tokenEncKey), fresh.client_id);
     await saveTokens(portal.id, tokens.access_token, tokens.refresh_token, tokens.expires_in);
     return tokens.access_token;
   })().finally(() => inflight.delete(portal.id));

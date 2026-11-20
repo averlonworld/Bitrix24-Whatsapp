@@ -2,6 +2,7 @@ export interface Portal {
   id: string;
   member_id: string;
   domain: string;
+  client_id: string | null;
   client_endpoint: string;
   access_token: string;
   refresh_token: string;
